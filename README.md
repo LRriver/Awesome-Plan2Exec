@@ -41,7 +41,7 @@
 
 | 组件 | 选择 | 用途 |
 |------|------|------|
-| LLM | Qwen3-30B | 语义理解、标签提取、场景生成 |
+| LLM | Qwen3-30B-A3B-Instruct-2507 | 语义理解、标签提取、场景生成 |
 | Embedding | Qwen3-Embedding-4B | 标签向量化 |
 | 降维 | UMAP | 保留语义结构 |
 | 聚类 | HDBSCAN | 自动发现簇数 |
