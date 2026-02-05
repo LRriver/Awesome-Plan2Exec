@@ -70,7 +70,7 @@ Awesome-Plan2Exec/
 ### 环境依赖
 
 ```bash
-pip install openai pydantic numpy umap-learn hdbscan
+pip install -r requirements.txt
 ```
 
 ### 运行流程
@@ -79,9 +79,7 @@ pip install openai pydantic numpy umap-learn hdbscan
 cd scenario-toolset-generator
 
 # 1. 下载原始数据
-cd data
-wget https://www.modelscope.cn/datasets/nanbeige/ToolMind/resolve/master/graph_syn_datasets/graphsyn.jsonl
-cd ..
+wget -P data -O graphsyn.jsonl https://www.modelscope.cn/datasets/nanbeige/ToolMind/resolve/master/graph_syn_datasets/graphsyn.jsonl
 
 # 2. 按工具集合并
 python preprocess/merge_by_toolset.py

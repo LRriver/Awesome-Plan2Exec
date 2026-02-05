@@ -41,7 +41,7 @@ This project automatically constructs "Task Scenario → Toolset" mappings from 
 
 | Component | Choice | Purpose |
 |-----------|--------|---------|
-| LLM | Qwen3-30B | Semantic understanding, label extraction, scenario generation |
+| LLM | Qwen3-30B-A3B-Instruct-2507 | Semantic understanding, label extraction, scenario generation |
 | Embedding | Qwen3-Embedding-4B | Label vectorization |
 | Dimensionality Reduction | UMAP | Preserve semantic structure |
 | Clustering | HDBSCAN | Automatic cluster discovery |
@@ -70,7 +70,7 @@ Awesome-Plan2Exec/
 ### Dependencies
 
 ```bash
-pip install openai pydantic numpy umap-learn hdbscan
+pip install -r requirements.txt
 ```
 
 ### Pipeline Execution
@@ -79,9 +79,7 @@ pip install openai pydantic numpy umap-learn hdbscan
 cd scenario-toolset-generator
 
 # 1. Download raw data
-cd data
-wget https://www.modelscope.cn/datasets/nanbeige/ToolMind/resolve/master/graph_syn_datasets/graphsyn.jsonl
-cd ..
+wget -P data -O graphsyn.jsonl https://www.modelscope.cn/datasets/nanbeige/ToolMind/resolve/master/graph_syn_datasets/graphsyn.jsonl
 
 # 2. Merge by toolset
 python preprocess/merge_by_toolset.py
@@ -129,4 +127,4 @@ python output/merge_duplicate_scenarios.py
 
 ## License
 
-MIT
+Apache-2.0

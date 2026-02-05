@@ -1,0 +1,17 @@
+# LLM API client
+openai==2.8.1
+
+# Data validation
+pydantic==2.12.2
+
+# Numerical computing
+numpy==2.3.5
+
+# Dimensionality reduction
+umap-learn==0.5.11
+
+# Clustering
+hdbscan==0.8.41
+
+# HTTP client (for async LLM calls)
+aiohttp==3.13.3
