@@ -59,6 +59,16 @@ Awesome-Plan2Exec/
 │   ├── clustering/                # Clustering results
 │   ├── generate/                  # Scenario generation
 │   └── output/                    # Final output
+├── plan-data-synthesis/           # DPO Preference Data Synthesis Pipeline
+│   ├── config.py                  # Centralized config (LLM, concurrency, sampling)
+│   ├── utils.py                   # Shared utilities (LLM calls, JSON parsing)
+│   ├── generate_questions.py      # Stage 1: Multi-difficulty question generation
+│   ├── plan_sampling.py           # Stage 2: Multi-path plan sampling
+│   ├── evaluate_plans.py          # Stage 3: LLM-as-Judge evaluation
+│   ├── build_preference.py        # Stage 4: Preference data extraction
+│   ├── run_pipeline.py            # Entry script (chains all 4 stages)
+│   ├── test/                      # Tests (pytest + hypothesis property tests)
+│   └── output/                    # Stage output files
 ├── images/                        # Image resources
 └── README.md
 ```
@@ -110,6 +120,61 @@ python output/merge_duplicate_scenarios.py
 
 - `output/scenario_tools_gte10.jsonl` - Scenarios with ≥10 tools (4,329 records)
 - `output/scenario_tools_lt10.jsonl` - Scenarios with <10 tools (169 records)
+
+---
+
+## DPO Preference Data Synthesis
+
+Built on top of the upstream scenario-toolset data, this module runs a four-stage pipeline — Question Generation → Plan Sampling → LLM-as-Judge Evaluation → Preference Data Extraction — to produce DPO preference training data.
+
+### Prerequisites
+
+- Completed upstream `scenario-toolset-generator` pipeline with `output/scenario_tools_gte10.jsonl`
+- An available LLM API service (OpenAI-compatible format)
+
+### Configuration
+
+Edit `plan-data-synthesis/config.py`:
+
+```python
+LLM_BASE_URL = "http://127.0.0.1:6001/v1"  # Your LLM API endpoint
+LLM_MODEL = "qwen3-30b"                      # Model name
+LLM_API_KEY = "empty"                         # API Key
+```
+
+### Running
+
+```bash
+cd plan-data-synthesis
+
+# Run the full pipeline
+python run_pipeline.py
+
+# Resume from a specific stage
+python run_pipeline.py --start-stage 2
+
+# Or run individual stages
+python generate_questions.py    # Stage 1: Question generation
+python plan_sampling.py         # Stage 2: Plan sampling
+python evaluate_plans.py        # Stage 3: LLM evaluation
+python build_preference.py      # Stage 4: Preference extraction
+```
+
+### Output Files
+
+| File | Description |
+|------|-------------|
+| `output/questions.jsonl` | ~50 multi-difficulty user questions |
+| `output/plan_samples.jsonl` | 5 sampled plans per question |
+| `output/evaluated_plans.jsonl` | Five-dimension evaluation scores |
+| `output/preference_data.jsonl` | Final DPO preference training data |
+
+### Testing
+
+```bash
+cd plan-data-synthesis
+python -m pytest test/ -v
+```
 
 ---
 

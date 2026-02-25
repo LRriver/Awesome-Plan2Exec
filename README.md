@@ -59,6 +59,16 @@ Awesome-Plan2Exec/
 │   ├── clustering/                # 聚类结果
 │   ├── generate/                  # 场景生成
 │   └── output/                    # 最终输出
+├── plan-data-synthesis/           # DPO偏好数据合成流水线
+│   ├── config.py                  # 集中配置（LLM、并发、采样参数）
+│   ├── utils.py                   # 公共工具（LLM调用、JSON解析容错）
+│   ├── generate_questions.py      # 阶段1：多难度问题生成
+│   ├── plan_sampling.py           # 阶段2：多路规划采样
+│   ├── evaluate_plans.py          # 阶段3：LLM-as-Judge评分
+│   ├── build_preference.py        # 阶段4：偏好数据提取
+│   ├── run_pipeline.py            # 入口脚本（串联四阶段）
+│   ├── test/                      # 测试（pytest + hypothesis属性测试）
+│   └── output/                    # 阶段输出文件
 ├── images/                        # 图片资源
 └── README.md
 ```
@@ -110,6 +120,61 @@ python output/merge_duplicate_scenarios.py
 
 - `output/scenario_tools_gte10.jsonl` - 工具数≥10的场景 (4,329条)
 - `output/scenario_tools_lt10.jsonl` - 工具数<10的场景 (169条)
+
+---
+
+## DPO 偏好数据合成
+
+基于上游场景-工具集数据，经过"问题生成 → 规划采样 → LLM-as-Judge 评分 → 偏好数据提取"四个阶段，产出 DPO 偏好训练数据。
+
+### 前置条件
+
+- 已完成上游 `scenario-toolset-generator` 流程，生成 `output/scenario_tools_gte10.jsonl`
+- 可用的 LLM API 服务（OpenAI 格式）
+
+### 配置
+
+修改 `plan-data-synthesis/config.py` 中的 LLM 配置：
+
+```python
+LLM_BASE_URL = "http://127.0.0.1:6001/v1"  # 你的 LLM API 地址
+LLM_MODEL = "qwen3-30b"                      # 模型名
+LLM_API_KEY = "empty"                         # API Key
+```
+
+### 运行
+
+```bash
+cd plan-data-synthesis
+
+# 运行完整流水线
+python run_pipeline.py
+
+# 从指定阶段开始（断点续传）
+python run_pipeline.py --start-stage 2
+
+# 或单独运行某个阶段
+python generate_questions.py    # 阶段1：问题生成
+python plan_sampling.py         # 阶段2：规划采样
+python evaluate_plans.py        # 阶段3：自动评分
+python build_preference.py      # 阶段4：偏好数据提取
+```
+
+### 输出文件
+
+| 文件 | 说明 |
+|------|------|
+| `output/questions.jsonl` | ~50条多难度用户问题 |
+| `output/plan_samples.jsonl` | 每条问题5次采样的规划结果 |
+| `output/evaluated_plans.jsonl` | 五维度评分结果 |
+| `output/preference_data.jsonl` | 最终DPO偏好训练数据 |
+
+### 测试
+
+```bash
+cd plan-data-synthesis
+python -m pytest test/ -v
+```
 
 ---
 
