@@ -1,33 +1,58 @@
 # Awesome-Plan2Exec
-[English](README_en.md) | [中文](README.md)   
-Scenario-Toolset Data Construction for Agent Planning and Execution
+[English](README_en.md) | [中文](README.md)
 
 ## Introduction
 
-This project automatically constructs "Task Scenario → Toolset" mappings from conversation data, enabling:
-- Tool recommendation
-- Agent task planning
-- Multi-tool orchestration
+The ultimate goal of this project is to **train a Planning Agent** capable of generating structured, reasonable task plans given a toolset and user query.
 
-**Output Example:**
-```json
-{
-  "scenario": "African Travel Planning",
-  "tools": {
-    "get_weather": "Get destination weather information",
-    "book_hotel": "Book hotels",
-    "search_flights": "Search for flights",
-    ...
-  },
-  "tools_count": 15
-}
+To achieve this, we designed a complete data construction pipeline with two progressive stages:
+
+1. **Scenario-Toolset Construction** (`scenario-toolset-generator/`): Automatically mine "Task Scenario → Toolset" mappings from conversation data
+2. **DPO Preference Data Synthesis** (`plan-data-synthesis/`): Synthesize DPO preference training data based on upstream scenario-toolset outputs
+
+![Data Synthesis Design](images/数据合成设计图.png)
+
+## Project Structure
+
+```
+Awesome-Plan2Exec/
+├── scenario-toolset-generator/    # Stage 1: Scenario-Toolset Generator
+│   ├── data/                      # Raw data
+│   ├── preprocess/                # Preprocessing: merge, annotate, embed
+│   ├── embeddings/                # Vector storage
+│   ├── clustering/                # Clustering results
+│   ├── generate/                  # Scenario generation
+│   └── output/                    # Final output
+├── plan-data-synthesis/           # Stage 2: DPO Preference Data Synthesis
+│   ├── config.py                  # Centralized config (LLM, concurrency, sampling)
+│   ├── utils.py                   # Shared utilities (LLM calls, JSON parsing)
+│   ├── generate_questions.py      # Stage 1: Multi-difficulty question generation
+│   ├── plan_sampling.py           # Stage 2: Multi-path plan sampling
+│   ├── evaluate_plans.py          # Stage 3: LLM-as-Judge evaluation
+│   ├── build_preference.py        # Stage 4: Preference data extraction
+│   ├── run_pipeline.py            # Entry script (chains all 4 stages)
+│   ├── test/                      # Tests (pytest + hypothesis property tests)
+│   └── output/                    # Stage output files
+├── images/                        # Image resources
+├── requirements.txt               # Python dependencies
+└── README.md
+```
+
+## Installation
+
+```bash
+pip install -r requirements.txt
 ```
 
 ---
 
-## System Architecture
+## Stage 1: Scenario-Toolset Construction
 
-![Data Synthesis Design](images/数据合成设计图.png)
+> Directory: `scenario-toolset-generator/`
+
+### Goal
+
+Automatically construct "Task Scenario → Toolset" mappings from conversation data for tool recommendation, agent task planning, and multi-tool orchestration.
 
 ### Core Pipeline
 
@@ -46,44 +71,7 @@ This project automatically constructs "Task Scenario → Toolset" mappings from 
 | Dimensionality Reduction | UMAP | Preserve semantic structure |
 | Clustering | HDBSCAN | Automatic cluster discovery |
 
----
-
-## Project Structure
-
-```
-Awesome-Plan2Exec/
-├── scenario-toolset-generator/    # Scenario-Toolset Generator
-│   ├── data/                      # Raw data
-│   ├── preprocess/                # Preprocessing: merge, annotate, embed
-│   ├── embeddings/                # Vector storage
-│   ├── clustering/                # Clustering results
-│   ├── generate/                  # Scenario generation
-│   └── output/                    # Final output
-├── plan-data-synthesis/           # DPO Preference Data Synthesis Pipeline
-│   ├── config.py                  # Centralized config (LLM, concurrency, sampling)
-│   ├── utils.py                   # Shared utilities (LLM calls, JSON parsing)
-│   ├── generate_questions.py      # Stage 1: Multi-difficulty question generation
-│   ├── plan_sampling.py           # Stage 2: Multi-path plan sampling
-│   ├── evaluate_plans.py          # Stage 3: LLM-as-Judge evaluation
-│   ├── build_preference.py        # Stage 4: Preference data extraction
-│   ├── run_pipeline.py            # Entry script (chains all 4 stages)
-│   ├── test/                      # Tests (pytest + hypothesis property tests)
-│   └── output/                    # Stage output files
-├── images/                        # Image resources
-└── README.md
-```
-
----
-
-## Quick Start
-
-### Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### Pipeline Execution
+### Running
 
 ```bash
 cd scenario-toolset-generator
@@ -116,20 +104,47 @@ python output/match_scenario_tools.py
 python output/merge_duplicate_scenarios.py
 ```
 
-### Output Files
+### Output
 
-- `output/scenario_tools_gte10.jsonl` - Scenarios with ≥10 tools (4,329 records)
-- `output/scenario_tools_lt10.jsonl` - Scenarios with <10 tools (169 records)
+- `output/scenario_tools_gte10.jsonl` — Scenarios with ≥10 tools (4,329 records)
+- `output/scenario_tools_lt10.jsonl` — Scenarios with <10 tools (169 records)
+
+**Output Example:**
+```json
+{
+  "scenario": "African Travel Planning",
+  "tools": {
+    "get_weather": "Get destination weather information",
+    "book_hotel": "Book hotels",
+    "search_flights": "Search for flights"
+  },
+  "tools_count": 15
+}
+```
+
+### Data Statistics
+
+| Stage | Count |
+|-------|-------|
+| Raw Conversations | 163,180 |
+| Unique Toolsets | 23,183 |
+| Clusters | 467 |
+| Generated Scenarios | 4,701 |
+| Final Output (≥10 tools) | 4,329 |
 
 ---
 
-## DPO Preference Data Synthesis
+## Stage 2: DPO Preference Data Synthesis
 
-Built on top of the upstream scenario-toolset data, this module runs a four-stage pipeline — Question Generation → Plan Sampling → LLM-as-Judge Evaluation → Preference Data Extraction — to produce DPO preference training data.
+> Directory: `plan-data-synthesis/`
+
+### Goal
+
+Built on top of the upstream scenario-toolset data, this module runs a four-stage pipeline — Question Generation → Plan Sampling → LLM-as-Judge Evaluation → Preference Data Extraction — to produce DPO preference training data for planning agent alignment.
 
 ### Prerequisites
 
-- Completed upstream `scenario-toolset-generator` pipeline with `output/scenario_tools_gte10.jsonl`
+- Completed Stage 1 with `scenario-toolset-generator/output/scenario_tools_gte10.jsonl`
 - An available LLM API service (OpenAI-compatible format)
 
 ### Configuration
@@ -160,7 +175,7 @@ python evaluate_plans.py        # Stage 3: LLM evaluation
 python build_preference.py      # Stage 4: Preference extraction
 ```
 
-### Output Files
+### Output
 
 | File | Description |
 |------|-------------|
@@ -175,18 +190,6 @@ python build_preference.py      # Stage 4: Preference extraction
 cd plan-data-synthesis
 python -m pytest test/ -v
 ```
-
----
-
-## Data Statistics
-
-| Stage | Count |
-|-------|-------|
-| Raw Conversations | 163,180 |
-| Unique Toolsets | 23,183 |
-| Clusters | 467 |
-| Generated Scenarios | 4,701 |
-| Final Output (≥10 tools) | 4,329 |
 
 ---
 
