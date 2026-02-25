@@ -8,7 +8,7 @@ The ultimate goal of this project is to **train a Planning Agent** capable of ge
 To achieve this, we designed a complete data construction pipeline with two progressive stages:
 
 1. **Scenario-Toolset Construction** (`scenario-toolset-generator/`): Automatically mine "Task Scenario → Toolset" mappings from conversation data
-2. **Preference Data Synthesis** (`plan-data-synthesis/`): Synthesize DPO preference training data based on upstream scenario-toolset outputs
+2. **Preference Data Synthesis** (`plan-data-synthesis/`): Synthesize preference training data based on upstream scenario-toolset outputs
 
 
 
@@ -18,23 +18,24 @@ To achieve this, we designed a complete data construction pipeline with two prog
 Awesome-Plan2Exec/
 ├── scenario-toolset-generator/    # Stage 1: Scenario-Toolset Generator
 │   ├── data/                      # Raw data
-│   ├── preprocess/                # Preprocessing: merge, annotate, embed
-│   ├── embeddings/                # Vector storage
-│   ├── clustering/                # Clustering results
-│   ├── generate/                  # Scenario generation
-│   └── output/                    # Final output
-├── plan-data-synthesis/           # Stage 2: DPO Preference Data Synthesis
+│   ├── preprocess/                # Stage 1.1: Preprocessing: merge, annotate, embed
+│   ├── embeddings/                # Stage 1.2: Vector storage
+│   ├── clustering/                # Stage 1.3: Clustering results
+│   ├── generate/                  # Stage 1.4: Scenario generation
+│   └── output/                    # Stage 1.5: Generate a "Scenario → Toolset" dataset.
+├── plan-data-synthesis/           # Stage 2: Preference Data Synthesis
 │   ├── config.py                  # Centralized config (LLM, concurrency, sampling)
 │   ├── utils.py                   # Shared utilities (LLM calls, JSON parsing)
-│   ├── generate_questions.py      # Stage 1: Multi-difficulty question generation
-│   ├── plan_sampling.py           # Stage 2: Multi-path plan sampling
-│   ├── evaluate_plans.py          # Stage 3: LLM-as-Judge evaluation
-│   ├── build_preference.py        # Stage 4: Preference data extraction
+│   ├── generate_questions.py      # Stage 2.1: Multi-difficulty question generation
+│   ├── plan_sampling.py           # Stage 2.2: Multi-path plan sampling
+│   ├── evaluate_plans.py          # Stage 2.3: LLM-as-Judge evaluation
+│   ├── build_preference.py        # Stage 2.4: Preference data extraction
 │   ├── run_pipeline.py            # Entry script (chains all 4 stages)
 │   ├── test/                      # Tests (pytest + hypothesis property tests)
 │   └── output/                    # Stage output files
 ├── images/                        # Image resources
 ├── requirements.txt               # Python dependencies
+├── README_en.md
 └── README.md
 ```
 
@@ -142,7 +143,7 @@ python output/merge_duplicate_scenarios.py
 
 ### Goal
 
-Built on top of the upstream scenario-toolset data, this module runs a four-stage pipeline — Question Generation → Plan Sampling → LLM-as-Judge Evaluation → Preference Data Extraction — to produce DPO preference training data for planning agent alignment.
+Built on top of the upstream scenario-toolset data, this module runs a four-stage pipeline — Question Generation → Plan Sampling → LLM-as-Judge Evaluation → Preference Data Extraction — to produce preference training data for planning agent alignment.
 
 ### Prerequisites
 
@@ -154,9 +155,9 @@ Built on top of the upstream scenario-toolset data, this module runs a four-stag
 Edit `plan-data-synthesis/config.py`:
 
 ```python
-LLM_BASE_URL = "http://127.0.0.1:6001/v1"  # Your LLM API endpoint
-LLM_MODEL = "qwen3-30b"                      # Model name
-LLM_API_KEY = "empty"                         # API Key
+LLM_BASE_URL = "your-llm-api-url"  # Your LLM API endpoint
+LLM_MODEL = "your-model-name"      # Model name
+LLM_API_KEY = "your-api-key"       # API Key
 ```
 
 ### Running
@@ -184,7 +185,7 @@ python build_preference.py      # Stage 4: Preference extraction
 | `output/questions.jsonl` | ~50 multi-difficulty user questions |
 | `output/plan_samples.jsonl` | 5 sampled plans per question |
 | `output/evaluated_plans.jsonl` | Five-dimension evaluation scores |
-| `output/preference_data.jsonl` | Final DPO preference training data |
+| `output/preference_data.jsonl` | Final preference training data |
 
 ### Testing
 

@@ -8,7 +8,7 @@
 为此，我们设计了一条完整的数据构建流水线，分为两个递进阶段：
 
 1. **场景-工具集构建**（`scenario-toolset-generator/`）：从对话数据中自动挖掘"任务场景 → 工具集"映射关系
-2. **偏好数据合成**（`plan-data-synthesis/`）：基于上游场景-工具集，合成用于 DPO 偏好训练的规划数据
+2. **偏好数据合成**（`plan-data-synthesis/`）：基于上游场景-工具集，合成用于偏好训练的规划数据
 
 
 
@@ -16,25 +16,26 @@
 
 ```
 Awesome-Plan2Exec/
-├── scenario-toolset-generator/    # 阶段一：场景-工具集生成器
+├── scenario-toolset-generator/    # 阶段1：场景-工具集生成器
 │   ├── data/                      # 原始数据
-│   ├── preprocess/                # 预处理：合并、标注、嵌入
-│   ├── embeddings/                # 向量存储
-│   ├── clustering/                # 聚类结果
-│   ├── generate/                  # 场景生成
-│   └── output/                    # 最终输出
-├── plan-data-synthesis/           # 阶段二：DPO偏好数据合成流水线
-│   ├── config.py                  # 集中配置（LLM、并发、采样参数）
-│   ├── utils.py                   # 公共工具（LLM调用、JSON解析容错）
-│   ├── generate_questions.py      # 阶段1：多难度问题生成
-│   ├── plan_sampling.py           # 阶段2：多路规划采样
-│   ├── evaluate_plans.py          # 阶段3：LLM-as-Judge评分
-│   ├── build_preference.py        # 阶段4：偏好数据提取
-│   ├── run_pipeline.py            # 入口脚本（串联四阶段）
+│   ├── preprocess/                # 阶段1.1：预处理 - 合并、标注、嵌入
+│   ├── embeddings/                # 阶段1.2：向量存储
+│   ├── clustering/                # 阶段1.3：聚类结果
+│   ├── generate/                  # 阶段1.4：场景生成
+│   └── output/                    # 阶段1.5：生成"场景 → 工具集"数据集
+├── plan-data-synthesis/           # 阶段2：偏好数据合成
+│   ├── config.py                  # 集中配置（LLM、并发、采样）
+│   ├── utils.py                   # 共享工具（LLM调用、JSON解析）
+│   ├── generate_questions.py      # 阶段2.1：多难度问题生成
+│   ├── plan_sampling.py           # 阶段2.2：多路径计划采样
+│   ├── evaluate_plans.py          # 阶段2.3：LLM-as-Judge评估
+│   ├── build_preference.py        # 阶段2.4：偏好数据提取
+│   ├── run_pipeline.py            # 入口脚本（串联全部4个阶段）
 │   ├── test/                      # 测试（pytest + hypothesis属性测试）
 │   └── output/                    # 阶段输出文件
-├── images/                        # 图片资源
-├── requirements.txt               # Python依赖
+├── images/                        # 图像资源
+├── requirements.txt               # Python依赖项
+├── README_en.md
 └── README.md
 ```
 
@@ -143,7 +144,7 @@ python output/merge_duplicate_scenarios.py
 
 ### 目标
 
-基于上游场景-工具集数据，经过"问题生成 → 规划采样 → LLM-as-Judge 评分 → 偏好数据提取"四个阶段，产出 DPO 偏好训练数据，用于后续规划智能体的对齐训练。
+基于上游场景-工具集数据，经过"问题生成 → 规划采样 → LLM-as-Judge 评分 → 偏好数据提取"四个阶段，产出偏好训练数据，用于后续规划智能体的对齐训练。
 
 ### 前置条件
 
@@ -155,9 +156,9 @@ python output/merge_duplicate_scenarios.py
 修改 `plan-data-synthesis/config.py` 中的 LLM 配置：
 
 ```python
-LLM_BASE_URL = "http://127.0.0.1:6001/v1"  # 你的 LLM API 地址
-LLM_MODEL = "qwen3-30b"                      # 模型名
-LLM_API_KEY = "empty"                         # API Key
+LLM_BASE_URL = "your-llm-api-url"  # 你的 LLM API 地址
+LLM_MODEL = "your-model-name"      # 模型名
+LLM_API_KEY = "your-api-key"       # API Key
 ```
 
 ### 运行
@@ -185,7 +186,7 @@ python build_preference.py      # 阶段4：偏好数据提取
 | `output/questions.jsonl` | ~50条多难度用户问题 |
 | `output/plan_samples.jsonl` | 每条问题5次采样的规划结果 |
 | `output/evaluated_plans.jsonl` | 五维度评分结果 |
-| `output/preference_data.jsonl` | 最终DPO偏好训练数据 |
+| `output/preference_data.jsonl` | 最终偏好训练数据 |
 
 ### 测试
 
