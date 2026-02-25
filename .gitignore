@@ -216,6 +216,9 @@ scenario-toolset-generator/generate/sample_complete_cluster.json
 scenario-toolset-generator/generate/clustered_toolsets.jsonl
 scenario-toolset-generator/clustering/cluster_labels copy.npy
 
+# Plan-data-synthesis config (contains API keys)
+plan-data-synthesis/config.py
+
 # Plan-data-synthesis output files
 plan-data-synthesis/output/
 

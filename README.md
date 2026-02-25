@@ -153,12 +153,19 @@ python output/merge_duplicate_scenarios.py
 
 ### 配置
 
-修改 `plan-data-synthesis/config.py` 中的 LLM 配置：
+首先复制配置模板并填入你的 LLM 配置：
+
+```bash
+cd plan-data-synthesis
+cp config_example.py config.py
+```
+
+然后修改 `config.py` 中的 LLM 配置：
 
 ```python
-LLM_BASE_URL = "your-llm-api-url"  # 你的 LLM API 地址
-LLM_MODEL = "your-model-name"      # 模型名
-LLM_API_KEY = "your-api-key"       # API Key
+LLM_BASE_URL = "http://127.0.0.1:6001/v1"  # 你的 LLM API 地址
+LLM_MODEL = "qwen3-30b"                      # 模型名
+LLM_API_KEY = "your-api-key"                 # API Key
 ```
 
 ### 运行

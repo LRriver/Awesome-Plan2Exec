@@ -152,12 +152,19 @@ Built on top of the upstream scenario-toolset data, this module runs a four-stag
 
 ### Configuration
 
-Edit `plan-data-synthesis/config.py`:
+First, copy the config template and fill in your LLM settings:
+
+```bash
+cd plan-data-synthesis
+cp config_example.py config.py
+```
+
+Then edit `config.py` with your LLM configuration:
 
 ```python
-LLM_BASE_URL = "your-llm-api-url"  # Your LLM API endpoint
-LLM_MODEL = "your-model-name"      # Model name
-LLM_API_KEY = "your-api-key"       # API Key
+LLM_BASE_URL = "http://127.0.0.1:6001/v1"  # Your LLM API endpoint
+LLM_MODEL = "qwen3-30b"                      # Model name
+LLM_API_KEY = "your-api-key"                 # API Key
 ```
 
 ### Running
