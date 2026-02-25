@@ -8,9 +8,9 @@ The ultimate goal of this project is to **train a Planning Agent** capable of ge
 To achieve this, we designed a complete data construction pipeline with two progressive stages:
 
 1. **Scenario-Toolset Construction** (`scenario-toolset-generator/`): Automatically mine "Task Scenario → Toolset" mappings from conversation data
-2. **DPO Preference Data Synthesis** (`plan-data-synthesis/`): Synthesize DPO preference training data based on upstream scenario-toolset outputs
+2. **Preference Data Synthesis** (`plan-data-synthesis/`): Synthesize DPO preference training data based on upstream scenario-toolset outputs
 
-![Data Synthesis Design](images/数据合成设计图.png)
+
 
 ## Project Structure
 
@@ -61,6 +61,8 @@ Automatically construct "Task Scenario → Toolset" mappings from conversation d
 3. **Semantic Clustering**: Embedding + UMAP + HDBSCAN discovers similar toolset clusters
 4. **Scenario Generation**: LLM extracts concrete task scenarios from each cluster
 5. **Tool Matching**: LLM determines scenario-tool relevance, filters relevant tool subsets
+
+![Data Synthesis Design](images/数据合成设计图.png)
 
 ### Technology Stack
 
@@ -134,7 +136,7 @@ python output/merge_duplicate_scenarios.py
 
 ---
 
-## Stage 2: DPO Preference Data Synthesis
+## Stage 2: Preference Data Synthesis
 
 > Directory: `plan-data-synthesis/`
 
