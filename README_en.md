@@ -150,6 +150,29 @@ Built on top of the upstream scenario-toolset data, this module runs a four-stag
 - Completed Stage 1 with `scenario-toolset-generator/output/scenario_tools_gte10.jsonl`
 - An available LLM API service (OpenAI-compatible format)
 
+### Core Workflow
+
+Preference data synthesis follows a four-stage pipeline, with explicit structural constraints and filtering rules at each step:
+
+1. **Question Generation (`generate_questions.py`)**
+  - Select 13 representative scenarios from Stage 1 data (covering multiple domains and toolset sizes), and generate 4 fixed question types per scenario:
+    - `simple`: solvable with a single tool
+    - `parallel`: 2-3 tools with parallel, non-dependent subtasks
+    - `complex_dependency`: multi-step tasks with strong dependency chains
+    - `chat`: scenario-related questions that require no tool usage
+
+2. **Plan Sampling (`plan_sampling.py`)**
+  - Perform multiple stochastic samplings per question to produce diverse candidate plans for the same query.
+  - Apply structural validity checks to filter out plans with missing fields or invalid dependency relations.
+
+3. **Automatic Evaluation (`evaluate_plans.py`)**
+  - Use LLM-as-Judge to score each plan on five dimensions: tool accuracy, dependency logic, task completeness, planning efficiency, and thought quality.
+  - Aggregate dimension scores with fixed weights to ensure consistent scoring criteria across samples.
+
+4. **Preference Construction (`build_preference.py`)**
+  - Rank plans per question by total score and form preference pairs from higher-scored vs. lower-scored candidates.
+  - Enforce constraints on minimum score gap, structural validity, and plan-level diversity to avoid weak or pseudo preference pairs.
+
 ### Configuration
 
 First, copy the config template and fill in your LLM settings:
@@ -162,8 +185,8 @@ cp config_example.py config.py
 Then edit `config.py` with your LLM configuration:
 
 ```python
-LLM_BASE_URL = "http://127.0.0.1:6001/v1"  # Your LLM API endpoint
-LLM_MODEL = "qwen3-30b"                      # Model name
+LLM_BASE_URL = "your-llm-api-url"  # Your LLM API endpoint
+LLM_MODEL = "model-name"                      # Model name
 LLM_API_KEY = "your-api-key"                 # API Key
 ```
 
@@ -190,7 +213,7 @@ python build_preference.py      # Stage 4: Preference extraction
 | File | Description |
 |------|-------------|
 | `output/questions.jsonl` | ~50 multi-difficulty user questions |
-| `output/plan_samples.jsonl` | 5 sampled plans per question |
+| `output/plan_samples.jsonl` | Multiple sampled plans per question |
 | `output/evaluated_plans.jsonl` | Five-dimension evaluation scores |
 | `output/preference_data.jsonl` | Final preference training data |
 
