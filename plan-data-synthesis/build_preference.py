@@ -9,6 +9,31 @@ import config
 from plan_sampling import validate_plan_output
 
 
+def extract_tool_sequence(plan: dict) -> tuple:
+    """提取计划的工具调用序列，用于去重比较。
+    
+    返回一个可哈希的元组，包含每个步骤使用的工具列表。
+    """
+    steps = plan.get("steps", [])
+    tool_seq = []
+    for step in steps:
+        tools = step.get("tools") or []
+        # 排序以忽略工具顺序差异
+        tool_seq.append(tuple(sorted(tools)))
+    return tuple(tool_seq)
+
+
+def plans_are_similar(plan1: dict, plan2: dict) -> bool:
+    """判断两个计划是否实质相似（工具调用序列相同）。
+    
+    如果两个计划使用完全相同的工具序列，则认为它们实质相似，
+    不适合作为 DPO 偏好对（因为差异可能只是措辞不同）。
+    """
+    seq1 = extract_tool_sequence(plan1)
+    seq2 = extract_tool_sequence(plan2)
+    return seq1 == seq2
+
+
 def build_preference_pair(question_data: dict) -> dict | None:
     """从单个问题的评分结果中提取 DPO 偏好数据对。
 
@@ -19,6 +44,7 @@ def build_preference_pair(question_data: dict) -> dict | None:
        - total_score < chosen_score
        - 分差 >= config.MIN_SCORE_GAP
        - 通过 validate_plan_output 结构校验
+       - 与 chosen_plan 的工具调用序列不同（避免仅措辞差异的伪偏好对）
     4. 找不到合适的 rejected_plan 则丢弃该条数据
 
     Args:
@@ -57,11 +83,14 @@ def build_preference_pair(question_data: dict) -> dict | None:
         # 结构必须完整
         if not validate_plan_output(candidate["plan"]):
             continue
+        # 工具调用序列必须不同（避免仅措辞差异的伪偏好对）
+        if plans_are_similar(chosen["plan"], candidate["plan"]):
+            continue
         rejected = candidate
         break
 
     if rejected is None:
-        print(f"[WARN] 无法找到合适的 rejected_plan（分差不足或结构不完整），丢弃: {question_data.get('query', '')[:50]}...")
+        print(f"[WARN] 无法找到合适的 rejected_plan（分差不足、结构不完整或工具序列相同），丢弃: {question_data.get('query', '')[:50]}...")
         return None
 
     # 4. 组装偏好数据对
