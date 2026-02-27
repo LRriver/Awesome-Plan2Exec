@@ -220,7 +220,7 @@ scenario-toolset-generator/clustering/cluster_labels copy.npy
 plan-data-synthesis/config.py
 
 # Plan-data-synthesis output files
-plan-data-synthesis/output/
+# plan-data-synthesis/output/
 
 # Large data files (download separately)
 scenario-toolset-generator/data/graphsyn.jsonl
