@@ -151,6 +151,29 @@ python output/merge_duplicate_scenarios.py
 - 已完成阶段一，生成 `scenario-toolset-generator/output/scenario_tools_gte10.jsonl`
 - 可用的 LLM API 服务（OpenAI 格式）
 
+### 核心流程
+
+偏好数据合成采用四阶段流水线，每阶段都包含明确的结构约束与筛选规则：
+
+1. **问题生成（`generate_questions.py`）**
+   - 从阶段一数据中筛选 13 个代表性场景（覆盖多领域、不同工具规模），每个场景固定生成 4 类问题：
+     - `simple`：单工具可完成
+     - `parallel`：2-3 工具并行、无依赖
+     - `complex_dependency`：多步强依赖链路
+     - `chat`：场景相关但无需工具
+
+2. **规划采样（`plan_sampling.py`）**
+   - 对每条问题进行多次随机采样，生成同题多解的候选规划。
+   - 对候选规划进行结构完整性校验，过滤字段缺失或依赖关系不合法的结果。
+
+3. **自动评估（`evaluate_plans.py`）**
+   - 用 LLM-as-Judge 按 5 个维度打分：工具准确性、依赖合理性、任务完整性、规划简洁性、思维链质量。
+   - 使用固定权重聚合为总分，保证不同样本之间的评分口径一致。
+
+4. **偏好构建（`build_preference.py`）**
+   - 每条问题内按总分排序，选出高分方案与低分方案构成偏好对。
+   - 通过最小分差、结构有效性与方案差异性约束，避免“分差过小”或“仅表述不同”的伪偏好对。
+
 ### 配置
 
 首先复制配置模板并填入你的 LLM 配置：
@@ -163,8 +186,8 @@ cp config_example.py config.py
 然后修改 `config.py` 中的 LLM 配置：
 
 ```python
-LLM_BASE_URL = "http://127.0.0.1:6001/v1"  # 你的 LLM API 地址
-LLM_MODEL = "qwen3-30b"                      # 模型名
+LLM_BASE_URL = "your-llm-api-url"  # 你的 LLM API 地址
+LLM_MODEL = "model-name"                      # 模型名
 LLM_API_KEY = "your-api-key"                 # API Key
 ```
 
@@ -191,7 +214,7 @@ python build_preference.py      # 阶段4：偏好数据提取
 | 文件 | 说明 |
 |------|------|
 | `output/questions.jsonl` | ~50条多难度用户问题 |
-| `output/plan_samples.jsonl` | 每条问题5次采样的规划结果 |
+| `output/plan_samples.jsonl` | 每条问题多次采样的规划结果 |
 | `output/evaluated_plans.jsonl` | 五维度评分结果 |
 | `output/preference_data.jsonl` | 最终偏好训练数据 |
 
