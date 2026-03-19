@@ -231,9 +231,9 @@ python evaluate_plans.py        # 阶段3：自动评分
 python build_preference.py      # 阶段4：偏好数据提取
 ```
 
-快速验证模式：修改 `generate_questions.py` 中 `SELECTED_SCENARIOS = FAST_SCENARIOS`（3 个场景，24 条问题）。
-少量合成模式：`SELECTED_SCENARIOS = FEW_SCENARIOS`（13 个场景，104 条问题）。
-全量合成模式：`SELECTED_SCENARIOS = ALL_SCENARIOS`（全部 ~4320 个场景，加载输入文件中所有场景）。
+- 快速验证模式：修改 `generate_questions.py` 中 `SELECTED_SCENARIOS = FAST_SCENARIOS`（3 个场景，24 条问题）。   
+- 少量合成模式：`SELECTED_SCENARIOS = FEW_SCENARIOS`（13 个场景，104 条问题）。   
+- 全量合成模式：`SELECTED_SCENARIOS = ALL_SCENARIOS`（全部 ~4320 个场景，加载输入文件中所有场景）。   
 
 ### 输出
 
@@ -244,7 +244,7 @@ python build_preference.py      # 阶段4：偏好数据提取
 | `output/evaluated_plans.jsonl` | 10 维度评分结果（每个计划 3 次评分取中位数） |
 | `output/preference_data.jsonl` | 最终偏好训练数据（DPO 格式） |
 
-### 数据统计（13 场景正式合成）
+### 数据统计（13 场景的少量合成）
 
 | 指标 | 数值 |
 |------|------|

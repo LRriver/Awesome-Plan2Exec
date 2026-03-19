@@ -231,9 +231,9 @@ python evaluate_plans.py        # Stage 3: LLM evaluation
 python build_preference.py      # Stage 4: Preference extraction
 ```
 
-Quick validation mode: set `SELECTED_SCENARIOS = FAST_SCENARIOS` in `generate_questions.py` (3 scenarios, 24 questions).
-Small batch mode: `SELECTED_SCENARIOS = FEW_SCENARIOS` (13 scenarios, 104 questions).
-Full synthesis mode: `SELECTED_SCENARIOS = ALL_SCENARIOS` (all ~4,320 scenarios from the input file).
+Quick validation mode: set `SELECTED_SCENARIOS = FAST_SCENARIOS` in `generate_questions.py` (3 scenarios, 24 questions).  
+Small batch mode: `SELECTED_SCENARIOS = FEW_SCENARIOS` (13 scenarios, 104 questions).  
+Full synthesis mode: `SELECTED_SCENARIOS = ALL_SCENARIOS` (all ~4,320 scenarios from the input file).  
 
 ### Output
 
@@ -244,7 +244,7 @@ Full synthesis mode: `SELECTED_SCENARIOS = ALL_SCENARIOS` (all ~4,320 scenarios 
 | `output/evaluated_plans.jsonl` | 10-dimension evaluation scores (3 samples per plan, median) |
 | `output/preference_data.jsonl` | Final preference training data (DPO format) |
 
-### Data Statistics (13-scenario full synthesis)
+### Data Statistics (13-scenario few synthesis)
 
 | Metric | Value |
 |--------|-------|
