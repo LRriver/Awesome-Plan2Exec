@@ -179,8 +179,13 @@ class TestSamplePlansForQuestion:
     async def test_collects_all_successful_samples(self):
         session = MagicMock()
         semaphore = asyncio.Semaphore(5)
+        mock_writer = AsyncMock()
         with patch("plan_sampling.sample_plan", new_callable=AsyncMock, return_value=self._valid_plan()):
-            result = await sample_plans_for_question(session, semaphore, self._question_data())
+            with patch("plan_sampling.config") as mock_config:
+                mock_config.PLAN_SAMPLE_K = 5
+                mock_config.REQUEST_DELAY = 0
+                mock_config.FLUSH_THRESHOLD = 10
+                result = await sample_plans_for_question(session, semaphore, self._question_data(), mock_writer)
         assert result["scenario"] == "test_scenario"
         assert result["difficulty"] == "simple"
         assert len(result["plans"]) == 5
@@ -189,17 +194,27 @@ class TestSamplePlansForQuestion:
     async def test_filters_out_none_results(self):
         session = MagicMock()
         semaphore = asyncio.Semaphore(5)
+        mock_writer = AsyncMock()
         side_effects = [self._valid_plan(), None, self._valid_plan(), None, None]
         with patch("plan_sampling.sample_plan", new_callable=AsyncMock, side_effect=side_effects):
-            result = await sample_plans_for_question(session, semaphore, self._question_data())
+            with patch("plan_sampling.config") as mock_config:
+                mock_config.PLAN_SAMPLE_K = 5
+                mock_config.REQUEST_DELAY = 0
+                mock_config.FLUSH_THRESHOLD = 10
+                result = await sample_plans_for_question(session, semaphore, self._question_data(), mock_writer)
         assert len(result["plans"]) == 2
 
     @pytest.mark.asyncio
     async def test_all_fail_returns_empty_plans(self):
         session = MagicMock()
         semaphore = asyncio.Semaphore(5)
+        mock_writer = AsyncMock()
         with patch("plan_sampling.sample_plan", new_callable=AsyncMock, return_value=None):
-            result = await sample_plans_for_question(session, semaphore, self._question_data())
+            with patch("plan_sampling.config") as mock_config:
+                mock_config.PLAN_SAMPLE_K = 5
+                mock_config.REQUEST_DELAY = 0
+                mock_config.FLUSH_THRESHOLD = 10
+                result = await sample_plans_for_question(session, semaphore, self._question_data(), mock_writer)
         assert result["plans"] == []
         assert result["query"] == "test query"
 

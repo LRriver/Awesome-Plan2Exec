@@ -12,7 +12,7 @@ from hypothesis import strategies as st
 # Ensure the parent module directory is on sys.path for direct imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from generate_questions import SELECTED_SCENARIOS, build_question_prompt, load_scenarios
+from generate_questions import SELECTED_SCENARIOS, FAST_SCENARIOS, FEW_SCENARIOS, ALL_SCENARIOS, build_question_prompt, load_scenarios
 
 
 # ──────────────────────────────────────────────
@@ -69,23 +69,20 @@ class TestLoadScenariosProperty:
             max_size=38,
         ),
     )
-    def test_load_scenarios_returns_12_to_13(self, extra_scenarios: list[str], tmp_path_factory):
+    def test_load_scenarios_returns_all_when_none(self, extra_scenarios: list[str], tmp_path_factory):
         """**Validates: Requirements 1.2**
 
-        Given a JSONL file containing all 13 selected scenarios plus extras
-        (51 total), load_scenarios should return 12-13 items.
+        When SELECTED_SCENARIOS is None, load_scenarios should return all records.
         """
-        # Build 51 mock scenario records: 13 selected + 38 extras
         records = []
-        for name in SELECTED_SCENARIOS:
+        for i in range(5):
             records.append(json.dumps({
-                "scenario": name,
+                "scenario": f"scenario_{i}",
                 "tools": {"tool_a": "desc_a"},
                 "tools_count": 15,
             }, ensure_ascii=False))
 
         for name in extra_scenarios:
-            # Ensure extras don't collide with selected names
             unique_name = f"extra_{name}"
             records.append(json.dumps({
                 "scenario": unique_name,
@@ -93,23 +90,22 @@ class TestLoadScenariosProperty:
                 "tools_count": 12,
             }, ensure_ascii=False))
 
-        # Write to a temp JSONL file
         tmp_file = tempfile.NamedTemporaryFile(
             mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
         )
         tmp_file.write("\n".join(records) + "\n")
         tmp_file.close()
 
-        # Patch config.INPUT_FILE to point to our temp file
-        with patch("generate_questions.config") as mock_config:
+        with patch("generate_questions.config") as mock_config, \
+             patch("generate_questions.SELECTED_SCENARIOS", None):
             mock_config.INPUT_FILE = Path(tmp_file.name)
+            mock_config.SCENARIO_LIMIT = 0
             result = load_scenarios()
 
-        assert 12 <= len(result) <= 13, (
-            f"Expected 12-13 scenarios, got {len(result)}"
+        assert len(result) == len(records), (
+            f"Expected {len(records)} scenarios, got {len(result)}"
         )
 
-        # Cleanup
         Path(tmp_file.name).unlink(missing_ok=True)
 
 
@@ -133,12 +129,16 @@ class TestBuildQuestionPromptUnit:
             assert name in prompt
             assert desc in prompt
 
-    def test_prompt_mentions_four_difficulties(self):
+    def test_prompt_mentions_eight_difficulties(self):
         prompt = build_question_prompt("场景", {"t": "d"})
-        assert "简单" in prompt
-        assert "并行" in prompt
-        assert "复杂依赖" in prompt
-        assert "闲聊" in prompt
+        assert "simple" in prompt
+        assert "parallel" in prompt
+        assert "complex_dependency" in prompt
+        assert "chat" in prompt
+        assert "ambiguous" in prompt
+        assert "adversarial" in prompt
+        assert "safety" in prompt
+        assert "long_chain" in prompt
 
 
 # ──────────────────────────────────────────────
@@ -148,10 +148,10 @@ class TestBuildQuestionPromptUnit:
 class TestLoadScenariosUnit:
     """Unit tests for load_scenarios."""
 
-    def test_loads_exactly_13_from_full_data(self):
-        """With all 13 selected scenarios present, should return 13."""
+    def test_loads_exactly_selected_count_from_full_data(self):
+        """With a concrete scenario list, should return len(list) records."""
         records = []
-        for name in SELECTED_SCENARIOS:
+        for name in FEW_SCENARIOS:
             records.append(json.dumps({
                 "scenario": name,
                 "tools": {"t": "d"},
@@ -171,11 +171,12 @@ class TestLoadScenariosUnit:
         tmp_file.write("\n".join(records) + "\n")
         tmp_file.close()
 
-        with patch("generate_questions.config") as mock_config:
+        with patch("generate_questions.config") as mock_config, \
+             patch("generate_questions.SELECTED_SCENARIOS", FEW_SCENARIOS):
             mock_config.INPUT_FILE = Path(tmp_file.name)
             result = load_scenarios()
 
-        assert len(result) == 13
+        assert len(result) == len(FEW_SCENARIOS)
         Path(tmp_file.name).unlink(missing_ok=True)
 
     def test_missing_file_exits(self):

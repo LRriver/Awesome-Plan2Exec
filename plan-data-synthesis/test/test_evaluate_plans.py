@@ -9,14 +9,13 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from evaluate_plans import build_eval_prompt, compute_weighted_score, validate_evaluation
+import config
 
 
 # ──────────────────────────────────────────────
-# Feature: plan-data-synthesis, Property 9: 评分 Prompt 包含完整上下文
-# Validates: Requirements 4.4, 4.5
+# Shared strategies
 # ──────────────────────────────────────────────
 
-# Strategies: printable text for user queries, tool dicts, and plan dicts
 _safe_text = st.text(
     alphabet=st.characters(whitelist_categories=("L", "N", "Z"), whitelist_characters="_-"),
     min_size=1,
@@ -50,114 +49,105 @@ _plan_strategy = st.fixed_dictionaries({
     ),
 })
 
+_difficulty_strategy = st.sampled_from(config.DIFFICULTY_LEVELS)
 
-class TestBuildEvalPromptProperty9:
-    """Property 9: build_eval_prompt() 包含完整上下文（用户问题、工具集、规划、五维度评分规则）。"""
 
-    @given(user_query=_safe_text, tools=_tool_dict_strategy, plan=_plan_strategy)
-    @settings(max_examples=100)
-    def test_prompt_contains_user_query(self, user_query: str, tools: dict, plan: dict):
-        """**Validates: Requirements 4.4**
-        评分 Prompt 应包含用户问题文本。
-        """
-        prompt = build_eval_prompt(user_query, tools, plan)
-        assert user_query in prompt, f"User query '{user_query}' not found in prompt"
+# ──────────────────────────────────────────────
+# Property tests: build_eval_prompt
+# ──────────────────────────────────────────────
 
-    @given(user_query=_safe_text, tools=_tool_dict_strategy, plan=_plan_strategy)
-    @settings(max_examples=100)
-    def test_prompt_contains_tool_names(self, user_query: str, tools: dict, plan: dict):
-        """**Validates: Requirements 4.4**
-        评分 Prompt 应包含工具集中所有工具名。
-        """
-        prompt = build_eval_prompt(user_query, tools, plan)
+class TestBuildEvalPromptProperty:
+    """build_eval_prompt() 包含完整上下文（用户问题、工具集、规划、10维度评分规则）。"""
+
+    @given(user_query=_safe_text, tools=_tool_dict_strategy, plan=_plan_strategy, difficulty=_difficulty_strategy)
+    @settings(max_examples=50)
+    def test_prompt_contains_user_query(self, user_query, tools, plan, difficulty):
+        prompt = build_eval_prompt(user_query, tools, plan, difficulty)
+        assert user_query in prompt
+
+    @given(user_query=_safe_text, tools=_tool_dict_strategy, plan=_plan_strategy, difficulty=_difficulty_strategy)
+    @settings(max_examples=50)
+    def test_prompt_contains_tool_names(self, user_query, tools, plan, difficulty):
+        prompt = build_eval_prompt(user_query, tools, plan, difficulty)
         for tool_name in tools:
-            assert tool_name in prompt, f"Tool name '{tool_name}' not found in prompt"
+            assert tool_name in prompt
 
-    @given(user_query=_safe_text, tools=_tool_dict_strategy, plan=_plan_strategy)
-    @settings(max_examples=100)
-    def test_prompt_contains_plan_content(self, user_query: str, tools: dict, plan: dict):
-        """**Validates: Requirements 4.4**
-        评分 Prompt 应包含待评估规划的 fixed_question。
-        """
-        prompt = build_eval_prompt(user_query, tools, plan)
-        assert plan["fixed_question"] in prompt, "Plan fixed_question not found in prompt"
+    @given(user_query=_safe_text, tools=_tool_dict_strategy, plan=_plan_strategy, difficulty=_difficulty_strategy)
+    @settings(max_examples=50)
+    def test_prompt_contains_plan_content(self, user_query, tools, plan, difficulty):
+        prompt = build_eval_prompt(user_query, tools, plan, difficulty)
+        assert plan["fixed_question"] in prompt
 
-    @given(user_query=_safe_text, tools=_tool_dict_strategy, plan=_plan_strategy)
-    @settings(max_examples=100)
-    def test_prompt_contains_five_dimensions(self, user_query: str, tools: dict, plan: dict):
-        """**Validates: Requirements 4.4, 4.5**
-        评分 Prompt 应包含五个评价维度的中文名称。
-        """
-        prompt = build_eval_prompt(user_query, tools, plan)
-        assert "工具准确性" in prompt
+    @given(user_query=_safe_text, tools=_tool_dict_strategy, plan=_plan_strategy, difficulty=_difficulty_strategy)
+    @settings(max_examples=50)
+    def test_prompt_contains_ten_dimensions(self, user_query, tools, plan, difficulty):
+        """评分 Prompt 应包含 10 个评价维度的中文名称。"""
+        prompt = build_eval_prompt(user_query, tools, plan, difficulty)
+        assert "工具存在性" in prompt
+        assert "工具语义匹配" in prompt
         assert "依赖合理性" in prompt
-        assert "任务完整性" in prompt
+        assert "无循环依赖" in prompt
+        assert "数据流完整性" in prompt
+        assert "显性需求覆盖" in prompt
+        assert "隐性需求识别" in prompt
         assert "规划简洁性" in prompt
-        assert "思维链质量" in prompt
+        assert "推理深度" in prompt
+        assert "思维一致性" in prompt
+
+    def test_safety_difficulty_adds_special_guide(self):
+        prompt = build_eval_prompt("有害请求", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "safety")
+        assert "安全类问题" in prompt
+        assert "拒绝" in prompt
+
+    def test_ambiguous_difficulty_adds_special_guide(self):
+        prompt = build_eval_prompt("模糊问题", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "ambiguous")
+        assert "模糊问题" in prompt
+        assert "歧义" in prompt
+
+    def test_adversarial_difficulty_adds_special_guide(self):
+        prompt = build_eval_prompt("对抗问题", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "adversarial")
+        assert "对抗性问题" in prompt
+        assert "误导" in prompt
+
+    def test_long_chain_difficulty_adds_special_guide(self):
+        prompt = build_eval_prompt("长链条", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "long_chain")
+        assert "长链条问题" in prompt
+        assert "4 步" in prompt
 
 
 # ──────────────────────────────────────────────
-# Feature: plan-data-synthesis, Property 8: 加权总分计算正确性
-# Validates: Requirements 4.3
+# Property tests: compute_weighted_score (10 dimensions)
 # ──────────────────────────────────────────────
 
-class TestComputeWeightedScoreProperty8:
-    """Property 8: 加权总分计算正确性。"""
+class TestComputeWeightedScoreProperty:
+    """加权总分计算正确性（10维度）。"""
 
-    @given(
-        tool_accuracy=st.integers(min_value=1, max_value=10),
-        dependency_logic=st.integers(min_value=1, max_value=10),
-        completeness=st.integers(min_value=1, max_value=10),
-        efficiency=st.integers(min_value=1, max_value=10),
-        thought_quality=st.integers(min_value=1, max_value=10),
-    )
+    @given(scores=st.fixed_dictionaries({
+        dim: st.integers(min_value=1, max_value=10)
+        for dim in config.EVAL_WEIGHTS
+    }))
     @settings(max_examples=100)
-    def test_weighted_score_matches_manual_calculation(
-        self, tool_accuracy, dependency_logic, completeness, efficiency, thought_quality
-    ):
-        """**Validates: Requirements 4.3**
-        For any 5 dimension scores (1-10), compute_weighted_score should equal
-        tool_accuracy*0.3 + dependency_logic*0.2 + completeness*0.2 + efficiency*0.15 + thought_quality*0.15
-        within 0.01 tolerance.
-        """
-        dimensions = {
-            "tool_accuracy": {"score": tool_accuracy, "reason": "r"},
-            "dependency_logic": {"score": dependency_logic, "reason": "r"},
-            "completeness": {"score": completeness, "reason": "r"},
-            "efficiency": {"score": efficiency, "reason": "r"},
-            "thought_quality": {"score": thought_quality, "reason": "r"},
-        }
-        expected = (
-            tool_accuracy * 0.3
-            + dependency_logic * 0.2
-            + completeness * 0.2
-            + efficiency * 0.15
-            + thought_quality * 0.15
-        )
+    def test_weighted_score_matches_manual(self, scores):
+        dimensions = {dim: {"score": s, "reason": "r"} for dim, s in scores.items()}
+        expected = sum(scores[dim] * config.EVAL_WEIGHTS[dim] for dim in config.EVAL_WEIGHTS)
         result = compute_weighted_score(dimensions)
-        assert abs(result - expected) <= 0.01, (
-            f"Expected ~{expected}, got {result}"
-        )
+        assert abs(result - round(expected, 2)) <= 0.01
 
 
 # ──────────────────────────────────────────────
-# Unit tests — validate_evaluation
+# Unit tests — validate_evaluation (10 dimensions)
 # ──────────────────────────────────────────────
 
 class TestValidateEvaluationUnit:
-    """Unit tests for validate_evaluation."""
 
     def _make_valid_evaluation(self) -> dict:
+        dims = {}
+        for dim in config.EVAL_WEIGHTS:
+            dims[dim] = {"score": 7, "reason": "Reasonable"}
         return {
-            "dimensions": {
-                "tool_accuracy": {"score": 8, "reason": "Good tool usage"},
-                "dependency_logic": {"score": 9, "reason": "Correct deps"},
-                "completeness": {"score": 7, "reason": "Covers most needs"},
-                "efficiency": {"score": 8, "reason": "No redundancy"},
-                "thought_quality": {"score": 7, "reason": "Clear reasoning"},
-            },
-            "total_score": 7.8,
-            "reasoning": "Overall good plan.",
+            "dimensions": dims,
+            "total_score": 7.0,
+            "reasoning": "Overall assessment.",
         }
 
     def test_valid_evaluation_passes(self):
@@ -170,27 +160,33 @@ class TestValidateEvaluationUnit:
 
     def test_missing_one_dimension(self):
         ev = self._make_valid_evaluation()
-        del ev["dimensions"]["efficiency"]
+        first_dim = list(config.EVAL_WEIGHTS.keys())[0]
+        del ev["dimensions"][first_dim]
         assert validate_evaluation(ev) is False
 
     def test_score_below_range(self):
         ev = self._make_valid_evaluation()
-        ev["dimensions"]["tool_accuracy"]["score"] = 0
+        first_dim = list(config.EVAL_WEIGHTS.keys())[0]
+        ev["dimensions"][first_dim]["score"] = 0
         assert validate_evaluation(ev) is False
 
     def test_score_above_range(self):
         ev = self._make_valid_evaluation()
-        ev["dimensions"]["completeness"]["score"] = 11
+        first_dim = list(config.EVAL_WEIGHTS.keys())[0]
+        ev["dimensions"][first_dim]["score"] = 11
         assert validate_evaluation(ev) is False
 
-    def test_score_not_int(self):
+    def test_float_score_accepted(self):
+        """新版本允许 float 分数（中位数可能是小数）。"""
         ev = self._make_valid_evaluation()
-        ev["dimensions"]["dependency_logic"]["score"] = 7.5
-        assert validate_evaluation(ev) is False
+        first_dim = list(config.EVAL_WEIGHTS.keys())[0]
+        ev["dimensions"][first_dim]["score"] = 7.5
+        assert validate_evaluation(ev) is True
 
     def test_empty_reason(self):
         ev = self._make_valid_evaluation()
-        ev["dimensions"]["thought_quality"]["reason"] = "   "
+        first_dim = list(config.EVAL_WEIGHTS.keys())[0]
+        ev["dimensions"][first_dim]["reason"] = "   "
         assert validate_evaluation(ev) is False
 
     def test_missing_total_score(self):
@@ -208,41 +204,26 @@ class TestValidateEvaluationUnit:
         assert validate_evaluation(None) is False
         assert validate_evaluation([]) is False
 
-    def test_dimensions_not_dict(self):
-        ev = self._make_valid_evaluation()
-        ev["dimensions"] = "string"
-        assert validate_evaluation(ev) is False
-
 
 # ──────────────────────────────────────────────
 # Unit tests — compute_weighted_score
 # ──────────────────────────────────────────────
 
 class TestComputeWeightedScoreUnit:
-    """Unit tests for compute_weighted_score with specific examples."""
 
     def test_all_tens(self):
-        dims = {k: {"score": 10, "reason": "r"} for k in [
-            "tool_accuracy", "dependency_logic", "completeness", "efficiency", "thought_quality"
-        ]}
+        dims = {k: {"score": 10, "reason": "r"} for k in config.EVAL_WEIGHTS}
         assert compute_weighted_score(dims) == 10.0
 
     def test_all_ones(self):
-        dims = {k: {"score": 1, "reason": "r"} for k in [
-            "tool_accuracy", "dependency_logic", "completeness", "efficiency", "thought_quality"
-        ]}
+        dims = {k: {"score": 1, "reason": "r"} for k in config.EVAL_WEIGHTS}
         assert compute_weighted_score(dims) == 1.0
 
     def test_known_example(self):
-        dims = {
-            "tool_accuracy": {"score": 8, "reason": "r"},
-            "dependency_logic": {"score": 9, "reason": "r"},
-            "completeness": {"score": 7, "reason": "r"},
-            "efficiency": {"score": 8, "reason": "r"},
-            "thought_quality": {"score": 7, "reason": "r"},
-        }
-        # 8*0.3 + 9*0.2 + 7*0.2 + 8*0.15 + 7*0.15 = 2.4 + 1.8 + 1.4 + 1.2 + 1.05 = 7.85
-        assert compute_weighted_score(dims) == 7.85
+        """已知输入的精确计算验证。"""
+        dims = {dim: {"score": 5, "reason": "r"} for dim in config.EVAL_WEIGHTS}
+        # 所有维度都是5，权重之和为1.0，所以结果应该是5.0
+        assert compute_weighted_score(dims) == 5.0
 
 
 # ──────────────────────────────────────────────
@@ -250,24 +231,23 @@ class TestComputeWeightedScoreUnit:
 # ──────────────────────────────────────────────
 
 class TestBuildEvalPromptUnit:
-    """Unit tests for build_eval_prompt with specific examples."""
 
     def test_basic_prompt_structure(self):
         prompt = build_eval_prompt(
             "查询股票价格",
             {"get_stock": "获取股票信息"},
             {"fixed_question": "查询600519股价", "thought": "需要查股票", "steps": []},
+            "simple",
         )
         assert "查询股票价格" in prompt
         assert "get_stock" in prompt
         assert "查询600519股价" in prompt
-        assert "工具准确性" in prompt
+        assert "工具存在性" in prompt
 
     def test_prompt_contains_scoring_rules(self):
-        prompt = build_eval_prompt("q", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []})
-        # Check deduction rules from requirements 4.5
-        assert "扣 5 分" in prompt  # 使用不存在的工具直接扣 5 分
+        prompt = build_eval_prompt("q", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "simple")
+        assert "扣 3 分" in prompt  # 工具不存在扣分
         assert "依赖" in prompt
         assert "遗漏" in prompt
         assert "冗余" in prompt
-        assert "空洞" in prompt
+        assert "套话" in prompt

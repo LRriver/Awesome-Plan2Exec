@@ -16,22 +16,21 @@ from build_preference import build_preference_pair
 # Helper
 # ──────────────────────────────────────────────
 
-def _make_evaluated_plan(score: float) -> dict:
-    """Build a minimal but structurally valid evaluated_plan entry."""
+def _make_evaluated_plan(score: float, tool_name: str = "tool_a") -> dict:
+    """Build a minimal but structurally valid evaluated_plan entry.
+    
+    Different tool_name values ensure plans have different tool sequences,
+    avoiding the plans_are_similar filter.
+    """
     return {
         "plan": {
             "fixed_question": "q",
             "thought": "t",
-            "steps": [{"thought": "s", "title": "s", "content": "c", "tools": None, "dependencies": None}],
+            "steps": [{"thought": "s", "title": "s", "content": "c",
+                        "tools": [tool_name], "dependencies": None}],
         },
         "evaluation": {
-            "dimensions": {
-                "tool_accuracy": {"score": 8, "reason": "r"},
-                "dependency_logic": {"score": 8, "reason": "r"},
-                "completeness": {"score": 8, "reason": "r"},
-                "efficiency": {"score": 8, "reason": "r"},
-                "thought_quality": {"score": 8, "reason": "r"},
-            },
+            "dimensions": {dim: {"score": 8, "reason": "r"} for dim in config.EVAL_WEIGHTS},
             "total_score": score,
             "reasoning": "r",
         },
@@ -39,13 +38,17 @@ def _make_evaluated_plan(score: float) -> dict:
 
 
 def _make_question_data(scores: list[float]) -> dict:
-    """Build a mock question_data dict with evaluated_plans at given scores."""
+    """Build a mock question_data dict with evaluated_plans at given scores.
+    
+    Each plan uses a different tool name to avoid the plans_are_similar filter.
+    """
+    tool_names = [f"tool_{chr(ord('a') + i)}" for i in range(len(scores))]
     return {
         "scenario": "test_scenario",
         "tools": {"tool_a": "desc_a"},
         "difficulty": "simple",
         "query": "test query",
-        "evaluated_plans": [_make_evaluated_plan(s) for s in scores],
+        "evaluated_plans": [_make_evaluated_plan(s, t) for s, t in zip(scores, tool_names)],
     }
 
 
@@ -111,8 +114,8 @@ class TestBuildPreferencePairUnit:
         assert result is None
 
     def test_score_gap_below_threshold_returns_none(self):
-        """All scores within 1.0 of each other → gap < 2.0 → None."""
-        result = build_preference_pair(_make_question_data([8.0, 7.5, 7.0, 6.5, 6.1]))
+        """All scores within 0.4 of each other → gap < 0.5 → None."""
+        result = build_preference_pair(_make_question_data([8.0, 7.8, 7.7, 7.6, 7.65]))
         assert result is None
 
     def test_fewer_than_two_plans_returns_none(self):
