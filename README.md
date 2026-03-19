@@ -24,11 +24,11 @@ Awesome-Plan2Exec/
 │   ├── generate/                  # 阶段1.4：场景生成
 │   └── output/                    # 阶段1.5：生成"场景 → 工具集"数据集
 ├── plan-data-synthesis/           # 阶段2：偏好数据合成
-│   ├── config.py                  # 集中配置（LLM、并发、采样）
+│   ├── config.py                  # 集中配置（LLM、并发、采样、评分权重）
 │   ├── utils.py                   # 共享工具（LLM调用、JSON解析）
-│   ├── generate_questions.py      # 阶段2.1：多难度问题生成
+│   ├── generate_questions.py      # 阶段2.1：8种难度问题生成
 │   ├── plan_sampling.py           # 阶段2.2：多路径计划采样
-│   ├── evaluate_plans.py          # 阶段2.3：LLM-as-Judge评估
+│   ├── evaluate_plans.py          # 阶段2.3：10维度 LLM-as-Judge 评估
 │   ├── build_preference.py        # 阶段2.4：偏好数据提取
 │   ├── run_pipeline.py            # 入口脚本（串联全部4个阶段）
 │   ├── test/                      # 测试（pytest + hypothesis属性测试）
@@ -78,7 +78,6 @@ pip install -r requirements.txt
 
 ```bash
 cd scenario-toolset-generator
-
 
 # 1. 下载原始数据
 wget -P data -O graphsyn.jsonl https://www.modelscope.cn/datasets/nanbeige/ToolMind/resolve/master/graph_syn_datasets/graphsyn.jsonl
@@ -153,26 +152,37 @@ python output/merge_duplicate_scenarios.py
 
 ### 核心流程
 
-偏好数据合成采用四阶段流水线，每阶段都包含明确的结构约束与筛选规则：
+偏好数据合成采用四阶段流水线，全阶段异步并发执行，带阈值流式写入（`FLUSH_THRESHOLD` 可配置），每阶段都包含明确的结构约束与筛选规则：
 
 1. **问题生成（`generate_questions.py`）**
-   - 从阶段一数据中筛选 13 个代表性场景（覆盖多领域、不同工具规模），每个场景固定生成 4 类问题：
+   - 从阶段一数据中筛选场景（支持三种模式：快速验证 3 个 / 少量合成 13 个 / 全量合成 ~4320 个），每个场景生成 8 种难度类型的问题：
      - `simple`：单工具可完成
      - `parallel`：2-3 工具并行、无依赖
      - `complex_dependency`：多步强依赖链路
      - `chat`：场景相关但无需工具
+     - `ambiguous`：模糊/歧义问题，需要规划者识别歧义并做合理假设
+     - `adversarial`：对抗性扰动（混合不相干需求、误导性上下文、自相矛盾约束）
+     - `safety`：涉及有害请求，正确行为是拒绝执行
+     - `long_chain`：长链条（≥4步工具调用），考验全局规划和依赖管理能力
 
 2. **规划采样（`plan_sampling.py`）**
-   - 对每条问题进行多次随机采样，生成同题多解的候选规划。
+   - 对每条问题并发进行 K 次高温采样（默认 K=8, temperature=1.0），生成同题多解的候选规划。
    - 对候选规划进行结构完整性校验，过滤字段缺失或依赖关系不合法的结果。
+   - 包含安全与伦理处理规则：有害请求应被拒绝，模糊问题应识别歧义。
 
 3. **自动评估（`evaluate_plans.py`）**
-   - 用 LLM-as-Judge 按 5 个维度打分：工具准确性、依赖合理性、任务完整性、规划简洁性、思维链质量。
-   - 使用固定权重聚合为总分，保证不同样本之间的评分口径一致。
+   - 借鉴 RubricHub 的细粒度 Rubric 思路，用 LLM-as-Judge 按 10 个维度打分，每个维度有明确的扣分锚点：
+     - 工具层：工具存在性、工具语义匹配
+     - 逻辑层：依赖合理性、无循环依赖、数据流完整性
+     - 完整性层：显性需求覆盖、隐性需求识别
+     - 效率层：规划简洁性
+     - 思维层：推理深度、思维一致性
+   - 针对 safety/ambiguous/adversarial/long_chain 设有专门的评判指引。
+   - 每个计划多次采样评分（默认 3 次）取中位数，减少单次评分随机性。
 
 4. **偏好构建（`build_preference.py`）**
    - 每条问题内按总分排序，选出高分方案与低分方案构成偏好对。
-   - 通过最小分差、结构有效性与方案差异性约束，避免“分差过小”或“仅表述不同”的伪偏好对。
+   - 通过最小分差、结构有效性与工具序列差异性约束，避免"分差过小"或"仅工具序列相同"的伪偏好对。
 
 ### 配置
 
@@ -186,18 +196,30 @@ cp config_example.py config.py
 然后修改 `config.py` 中的 LLM 配置：
 
 ```python
-LLM_BASE_URL = "your-llm-api-url"  # 你的 LLM API 地址
-LLM_MODEL = "model-name"                      # 模型名
-LLM_API_KEY = "your-api-key"                 # API Key
+LLM_BASE_URL = "your-llm-api-url"   # 你的 LLM API 地址
+LLM_MODEL = "model-name"            # 模型名
+LLM_API_KEY = "your-api-key"        # API Key
 ```
+
+关键参数说明：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `MAX_CONCURRENCY` | 10 | 异步并发池大小 |
+| `PLAN_SAMPLE_K` | 8 | 每个问题的规划采样次数 |
+| `PLAN_TEMPERATURE` | 1.0 | 规划采样温度（高温增加多样性） |
+| `EVAL_SAMPLE_N` | 3 | 每个计划的评分采样次数（取中位数） |
+| `EVAL_TEMPERATURE` | 1.0 | 评分采样温度 |
+| `MIN_SCORE_GAP` | 0.5 | chosen 与 rejected 的最小分差 |
+| `FLUSH_THRESHOLD` | 10 | 累积多少条结果后写入磁盘 |
 
 ### 运行
 
 ```bash
 cd plan-data-synthesis
 
-# 运行完整流水线
-python run_pipeline.py
+# 运行完整流水线（从阶段1到阶段4）
+python run_pipeline.py --start-stage 1
 
 # 从指定阶段开始（断点续传）
 python run_pipeline.py --start-stage 2
@@ -209,14 +231,30 @@ python evaluate_plans.py        # 阶段3：自动评分
 python build_preference.py      # 阶段4：偏好数据提取
 ```
 
+快速验证模式：修改 `generate_questions.py` 中 `SELECTED_SCENARIOS = FAST_SCENARIOS`（3 个场景，24 条问题）。
+少量合成模式：`SELECTED_SCENARIOS = FEW_SCENARIOS`（13 个场景，104 条问题）。
+全量合成模式：`SELECTED_SCENARIOS = ALL_SCENARIOS`（全部 ~4320 个场景，加载输入文件中所有场景）。
+
 ### 输出
 
 | 文件 | 说明 |
 |------|------|
-| `output/questions.jsonl` | ~50条多难度用户问题 |
-| `output/plan_samples.jsonl` | 每条问题多次采样的规划结果 |
-| `output/evaluated_plans.jsonl` | 五维度评分结果 |
-| `output/preference_data.jsonl` | 最终偏好训练数据 |
+| `output/questions.jsonl` | 104 条 8 种难度的用户问题（13 场景 × 8 难度） |
+| `output/plan_samples.jsonl` | 每条问题 8 次采样的规划结果 |
+| `output/evaluated_plans.jsonl` | 10 维度评分结果（每个计划 3 次评分取中位数） |
+| `output/preference_data.jsonl` | 最终偏好训练数据（DPO 格式） |
+
+### 数据统计（13 场景正式合成）
+
+| 指标 | 数值 |
+|------|------|
+| 问题总数 | 104 |
+| 有效规划 | 758 |
+| 评分成功 | 757 |
+| 有效偏好对 | 64（61.5%） |
+| 平均分差 | 1.11 |
+| chosen 平均分 | 8.82 |
+| rejected 平均分 | 7.71 |
 
 ### 测试
 

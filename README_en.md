@@ -24,11 +24,11 @@ Awesome-Plan2Exec/
 │   ├── generate/                  # Stage 1.4: Scenario generation
 │   └── output/                    # Stage 1.5: Generate a "Scenario → Toolset" dataset.
 ├── plan-data-synthesis/           # Stage 2: Preference Data Synthesis
-│   ├── config.py                  # Centralized config (LLM, concurrency, sampling)
+│   ├── config.py                  # Centralized config (LLM, concurrency, sampling, eval weights)
 │   ├── utils.py                   # Shared utilities (LLM calls, JSON parsing)
-│   ├── generate_questions.py      # Stage 2.1: Multi-difficulty question generation
+│   ├── generate_questions.py      # Stage 2.1: 8-difficulty question generation
 │   ├── plan_sampling.py           # Stage 2.2: Multi-path plan sampling
-│   ├── evaluate_plans.py          # Stage 2.3: LLM-as-Judge evaluation
+│   ├── evaluate_plans.py          # Stage 2.3: 10-dimension LLM-as-Judge evaluation
 │   ├── build_preference.py        # Stage 2.4: Preference data extraction
 │   ├── run_pipeline.py            # Entry script (chains all 4 stages)
 │   ├── test/                      # Tests (pytest + hypothesis property tests)
@@ -152,26 +152,37 @@ Built on top of the upstream scenario-toolset data, this module runs a four-stag
 
 ### Core Workflow
 
-Preference data synthesis follows a four-stage pipeline, with explicit structural constraints and filtering rules at each step:
+Preference data synthesis follows a four-stage pipeline with full async concurrency and threshold-based streaming writes (`FLUSH_THRESHOLD` configurable). Each stage includes explicit structural constraints and filtering rules:
 
 1. **Question Generation (`generate_questions.py`)**
-  - Select 13 representative scenarios from Stage 1 data (covering multiple domains and toolset sizes), and generate 4 fixed question types per scenario:
-    - `simple`: solvable with a single tool
-    - `parallel`: 2-3 tools with parallel, non-dependent subtasks
-    - `complex_dependency`: multi-step tasks with strong dependency chains
-    - `chat`: scenario-related questions that require no tool usage
+   - Select scenarios from Stage 1 data (three modes: quick validation with 3 / small batch with 13 / full synthesis with all ~4,320), generating 8 difficulty types per scenario:
+     - `simple`: solvable with a single tool
+     - `parallel`: 2-3 tools with parallel, non-dependent subtasks
+     - `complex_dependency`: multi-step tasks with strong dependency chains
+     - `chat`: scenario-related questions that require no tool usage
+     - `ambiguous`: vague/ambiguous questions requiring the planner to identify ambiguity and make reasonable assumptions
+     - `adversarial`: adversarial perturbations (mixing unrelated requests, misleading context, self-contradictory constraints)
+     - `safety`: harmful requests involving illegal/dangerous activities; correct behavior is to refuse execution
+     - `long_chain`: long chains (≥4 tool calls), testing global planning and dependency management
 
 2. **Plan Sampling (`plan_sampling.py`)**
-  - Perform multiple stochastic samplings per question to produce diverse candidate plans for the same query.
-  - Apply structural validity checks to filter out plans with missing fields or invalid dependency relations.
+   - Concurrently perform K high-temperature samplings per question (default K=8, temperature=1.0) to produce diverse candidate plans.
+   - Apply structural validity checks to filter out plans with missing fields or invalid dependency relations.
+   - Includes safety and ethics handling rules: harmful requests should be refused, ambiguous questions should identify ambiguity.
 
 3. **Automatic Evaluation (`evaluate_plans.py`)**
-  - Use LLM-as-Judge to score each plan on five dimensions: tool accuracy, dependency logic, task completeness, planning efficiency, and thought quality.
-  - Aggregate dimension scores with fixed weights to ensure consistent scoring criteria across samples.
+   - Inspired by RubricHub's fine-grained rubric approach, uses LLM-as-Judge to score on 10 dimensions with explicit deduction anchors:
+     - Tool layer: tool existence, tool semantic match
+     - Logic layer: dependency logic, no circular dependencies, data flow integrity
+     - Completeness layer: explicit requirement coverage, implicit needs identification
+     - Efficiency layer: planning conciseness
+     - Reasoning layer: thought depth, thought consistency
+   - Specialized evaluation guides for safety/ambiguous/adversarial/long_chain question types.
+   - Multiple scoring samples per plan (default 3) with median aggregation to reduce single-score randomness.
 
 4. **Preference Construction (`build_preference.py`)**
-  - Rank plans per question by total score and form preference pairs from higher-scored vs. lower-scored candidates.
-  - Enforce constraints on minimum score gap, structural validity, and plan-level diversity to avoid weak or pseudo preference pairs.
+   - Rank plans per question by total score and form preference pairs from higher-scored vs. lower-scored candidates.
+   - Enforce constraints on minimum score gap, structural validity, and tool sequence diversity to avoid weak or pseudo preference pairs.
 
 ### Configuration
 
@@ -185,18 +196,30 @@ cp config_example.py config.py
 Then edit `config.py` with your LLM configuration:
 
 ```python
-LLM_BASE_URL = "your-llm-api-url"  # Your LLM API endpoint
-LLM_MODEL = "model-name"                      # Model name
-LLM_API_KEY = "your-api-key"                 # API Key
+LLM_BASE_URL = "your-llm-api-url"   # Your LLM API endpoint
+LLM_MODEL = "model-name"            # Model name
+LLM_API_KEY = "your-api-key"        # API Key
 ```
+
+Key parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `MAX_CONCURRENCY` | 10 | Async concurrency pool size |
+| `PLAN_SAMPLE_K` | 8 | Plan samplings per question |
+| `PLAN_TEMPERATURE` | 1.0 | Sampling temperature (higher = more diversity) |
+| `EVAL_SAMPLE_N` | 3 | Scoring samples per plan (median aggregation) |
+| `EVAL_TEMPERATURE` | 1.0 | Scoring temperature |
+| `MIN_SCORE_GAP` | 0.5 | Minimum score gap between chosen and rejected |
+| `FLUSH_THRESHOLD` | 10 | Records to buffer before flushing to disk |
 
 ### Running
 
 ```bash
 cd plan-data-synthesis
 
-# Run the full pipeline
-python run_pipeline.py
+# Run the full pipeline (stage 1 through 4)
+python run_pipeline.py --start-stage 1
 
 # Resume from a specific stage
 python run_pipeline.py --start-stage 2
@@ -208,14 +231,30 @@ python evaluate_plans.py        # Stage 3: LLM evaluation
 python build_preference.py      # Stage 4: Preference extraction
 ```
 
+Quick validation mode: set `SELECTED_SCENARIOS = FAST_SCENARIOS` in `generate_questions.py` (3 scenarios, 24 questions).
+Small batch mode: `SELECTED_SCENARIOS = FEW_SCENARIOS` (13 scenarios, 104 questions).
+Full synthesis mode: `SELECTED_SCENARIOS = ALL_SCENARIOS` (all ~4,320 scenarios from the input file).
+
 ### Output
 
 | File | Description |
 |------|-------------|
-| `output/questions.jsonl` | ~50 multi-difficulty user questions |
-| `output/plan_samples.jsonl` | Multiple sampled plans per question |
-| `output/evaluated_plans.jsonl` | Five-dimension evaluation scores |
-| `output/preference_data.jsonl` | Final preference training data |
+| `output/questions.jsonl` | 104 user questions across 8 difficulty types (13 scenarios × 8) |
+| `output/plan_samples.jsonl` | 8 sampled plans per question |
+| `output/evaluated_plans.jsonl` | 10-dimension evaluation scores (3 samples per plan, median) |
+| `output/preference_data.jsonl` | Final preference training data (DPO format) |
+
+### Data Statistics (13-scenario full synthesis)
+
+| Metric | Value |
+|--------|-------|
+| Total questions | 104 |
+| Valid plans | 758 |
+| Successfully scored | 757 |
+| Valid preference pairs | 64 (61.5%) |
+| Average score gap | 1.11 |
+| Chosen avg score | 8.82 |
+| Rejected avg score | 7.71 |
 
 ### Testing
 
