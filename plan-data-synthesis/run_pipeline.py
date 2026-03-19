@@ -24,26 +24,14 @@ STAGE_OUTPUT_FILES = {
 }
 
 
-def check_overwrite(stage: int) -> bool:
-    """Check if output file exists and prompt user for confirmation."""
-    output_file = STAGE_OUTPUT_FILES[stage]
-    if output_file.exists():
-        response = input(f"[WARN] 阶段 {stage} 的输出文件已存在: {output_file}\n是否覆盖？(y/N): ")
-        if response.strip().lower() != "y":
-            return False
-    return True
-
-
 async def run_pipeline(start_stage: int):
     """Run the pipeline from the specified stage."""
     print(f"[INFO] 从阶段 {start_stage} 开始执行流水线...")
 
-    stages_to_run = range(start_stage, 5)
-
-    for stage in stages_to_run:
-        if not check_overwrite(stage):
-            print(f"[INFO] 跳过阶段 {stage}: {STAGE_NAMES[stage]}")
-            continue
+    for stage in range(start_stage, 5):
+        output_file = STAGE_OUTPUT_FILES[stage]
+        if output_file.exists():
+            print(f"[WARN] 阶段 {stage} 的输出文件已存在，将覆盖: {output_file}")
 
         print(f"\n{'='*60}")
         print(f"[INFO] 开始执行阶段 {stage}: {STAGE_NAMES[stage]}")
@@ -60,7 +48,7 @@ async def run_pipeline(start_stage: int):
             await stage3_main()
         elif stage == 4:
             from build_preference import main as stage4_main
-            stage4_main()  # sync
+            stage4_main()
 
         print(f"\n[INFO] 阶段 {stage} 完成: {STAGE_NAMES[stage]}")
 

@@ -10,90 +10,54 @@ from plan_sampling import validate_plan_output
 
 
 def extract_tool_sequence(plan: dict) -> tuple:
-    """提取计划的工具调用序列，用于去重比较。
-    
-    返回一个可哈希的元组，包含每个步骤使用的工具列表。
-    """
+    """提取计划的工具调用序列，用于去重比较。"""
     steps = plan.get("steps", [])
     tool_seq = []
     for step in steps:
         tools = step.get("tools") or []
-        # 排序以忽略工具顺序差异
         tool_seq.append(tuple(sorted(tools)))
     return tuple(tool_seq)
 
 
 def plans_are_similar(plan1: dict, plan2: dict) -> bool:
-    """判断两个计划是否实质相似（工具调用序列相同）。
-    
-    如果两个计划使用完全相同的工具序列，则认为它们实质相似，
-    不适合作为 DPO 偏好对（因为差异可能只是措辞不同）。
-    """
-    seq1 = extract_tool_sequence(plan1)
-    seq2 = extract_tool_sequence(plan2)
-    return seq1 == seq2
+    """判断两个计划是否实质相似（工具调用序列相同）。"""
+    return extract_tool_sequence(plan1) == extract_tool_sequence(plan2)
 
 
 def build_preference_pair(question_data: dict) -> dict | None:
-    """从单个问题的评分结果中提取 DPO 偏好数据对。
-
-    筛选逻辑：
-    1. 按 total_score 降序排列所有 evaluated_plans
-    2. 最高分作为 chosen_plan
-    3. 从最低分向上遍历，找第一个满足以下条件的作为 rejected_plan：
-       - total_score < chosen_score
-       - 分差 >= config.MIN_SCORE_GAP
-       - 通过 validate_plan_output 结构校验
-       - 与 chosen_plan 的工具调用序列不同（避免仅措辞差异的伪偏好对）
-    4. 找不到合适的 rejected_plan 则丢弃该条数据
-
-    Args:
-        question_data: 包含 scenario、tools、difficulty、query、evaluated_plans 的字典。
-            evaluated_plans 是 [{"plan": {...}, "evaluation": {...}}, ...] 列表。
-
-    Returns:
-        包含 10 个字段的偏好数据字典，或 None（无法构建有效偏好对时）。
-    """
+    """从单个问题的评分结果中提取 DPO 偏好数据对。"""
     evaluated_plans = question_data.get("evaluated_plans", [])
     if len(evaluated_plans) < 2:
         print(f"[WARN] 评分结果不足 2 个，跳过: {question_data.get('query', '')[:50]}...")
         return None
 
-    # 1. 按 total_score 降序排序
     sorted_plans = sorted(
         evaluated_plans,
         key=lambda x: x["evaluation"]["total_score"],
         reverse=True,
     )
 
-    # 2. 最高分作为 chosen
     chosen = sorted_plans[0]
     chosen_score = chosen["evaluation"]["total_score"]
 
-    # 3. 从最低分向上遍历，找合适的 rejected
     rejected = None
     for candidate in reversed(sorted_plans[1:]):
         candidate_score = candidate["evaluation"]["total_score"]
-        # 必须低于 chosen_score
         if candidate_score >= chosen_score:
             continue
-        # 分差必须 >= MIN_SCORE_GAP
         if chosen_score - candidate_score < config.MIN_SCORE_GAP:
             continue
-        # 结构必须完整
         if not validate_plan_output(candidate["plan"]):
             continue
-        # 工具调用序列必须不同（避免仅措辞差异的伪偏好对）
         if plans_are_similar(chosen["plan"], candidate["plan"]):
             continue
         rejected = candidate
         break
 
     if rejected is None:
-        print(f"[WARN] 无法找到合适的 rejected_plan（分差不足、结构不完整或工具序列相同），丢弃: {question_data.get('query', '')[:50]}...")
+        print(f"[WARN] 无法找到合适的 rejected_plan，丢弃: {question_data.get('query', '')[:50]}...")
         return None
 
-    # 4. 组装偏好数据对
     return {
         "scenario": question_data["scenario"],
         "tools": question_data["tools"],
@@ -109,21 +73,17 @@ def build_preference_pair(question_data: dict) -> dict | None:
 
 
 def main():
-    """入口：从 evaluated_plans.jsonl 加载评分数据 → 筛选偏好对 → 写入 preference_data.jsonl"""
-    # 1. 检查输入文件是否存在
+    """入口：加载评分数据 → 筛选偏好对 → 流式写入"""
     if not config.EVALUATED_PLANS_FILE.exists():
         print(f"[ERROR] 评分结果文件不存在: {config.EVALUATED_PLANS_FILE}")
-        print("[ERROR] 请先运行第三阶段 evaluate_plans.py 生成评分数据")
         sys.exit(1)
 
-    # 2. 加载评分数据
     evaluated_data = []
     with open(config.EVALUATED_PLANS_FILE, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if not line:
-                continue
-            evaluated_data.append(json.loads(line))
+            if line:
+                evaluated_data.append(json.loads(line))
 
     if not evaluated_data:
         print("[ERROR] 评分文件为空，终止执行")
@@ -131,26 +91,28 @@ def main():
 
     print(f"[INFO] 已加载 {len(evaluated_data)} 条问题的评分数据，开始构建偏好对...")
 
-    # 3. 逐条构建偏好数据对
-    preference_pairs = []
+    # 流式写入，带缓冲
+    buffer = []
+    valid = 0
     discarded = 0
-    for question_data in evaluated_data:
-        pair = build_preference_pair(question_data)
-        if pair is not None:
-            preference_pairs.append(pair)
-        else:
-            discarded += 1
 
-    # 4. 写入输出文件
     with open(config.PREFERENCE_DATA_FILE, "w", encoding="utf-8") as f:
-        for pair in preference_pairs:
-            f.write(json.dumps(pair, ensure_ascii=False) + "\n")
+        for question_data in evaluated_data:
+            pair = build_preference_pair(question_data)
+            if pair is not None:
+                buffer.append(json.dumps(pair, ensure_ascii=False) + "\n")
+                valid += 1
+                if len(buffer) >= config.FLUSH_THRESHOLD:
+                    f.writelines(buffer)
+                    buffer.clear()
+            else:
+                discarded += 1
+        # 刷盘剩余
+        if buffer:
+            f.writelines(buffer)
 
-    # 5. 打印摘要
-    total = len(evaluated_data)
-    valid = len(preference_pairs)
     print(f"\n[INFO] 偏好数据构建完成！")
-    print(f"  总问题数: {total}")
+    print(f"  总问题数: {len(evaluated_data)}")
     print(f"  有效偏好对: {valid}")
     print(f"  丢弃: {discarded}")
     print(f"[INFO] 结果已写入 {config.PREFERENCE_DATA_FILE}")
