@@ -25,21 +25,51 @@ MAX_RETRIES = 3              # 最大重试次数
 RETRY_BACKOFF_BASE = 1       # 指数退避基数（秒），实际间隔: 1s, 2s, 4s
 
 # ============ 采样参数 ============
-PLAN_SAMPLE_K = 5            # 每个问题的采样次数
-PLAN_TEMPERATURE = 0.8       # 规划采样温度
-PLAN_TOP_P = 0.9             # 规划采样 Top-P
+PLAN_SAMPLE_K = 8            # 每个问题的采样次数
+PLAN_TEMPERATURE = 1.0       # 规划采样温度
+PLAN_TOP_P = 0.95            # 规划采样 Top-P
 
-# ============ 评分权重 ============
+# ============ 评分参数 ============
+EVAL_TEMPERATURE = 1.0       # 评分采样温度（提高区分度）
+EVAL_SAMPLE_N = 3            # 每个计划评分采样次数（多次取中位数）
+
+# ============ 评分权重（10维度） ============
 EVAL_WEIGHTS = {
-    "tool_accuracy": 0.3,
-    "dependency_logic": 0.2,
-    "completeness": 0.2,
-    "efficiency": 0.15,
-    "thought_quality": 0.15,
+    # --- 工具层 (0.30) ---
+    "tool_existence":       0.15,   # 工具是否存在于工具集中
+    "tool_semantic_match":  0.15,   # 工具语义是否匹配步骤任务
+    # --- 逻辑层 (0.25) ---
+    "dependency_logic":     0.12,   # 依赖关系是否正确
+    "no_circular_dep":      0.05,   # 无循环依赖
+    "data_flow_integrity":  0.08,   # 数据流完整性
+    # --- 完整性层 (0.20) ---
+    "completeness":         0.12,   # 是否覆盖所有显性子任务
+    "implicit_needs":       0.08,   # 是否识别隐性需求
+    # --- 效率层 (0.10) ---
+    "efficiency":           0.10,   # 无冗余步骤，粒度合理
+    # --- 思维层 (0.15) ---
+    "thought_depth":        0.08,   # 推理深度
+    "thought_consistency":  0.07,   # thought 与实际执行的一致性
 }
 
+# ============ 流式写入 ============
+FLUSH_THRESHOLD = 10         # 累积多少条结果后写入磁盘（减少 IO 次数）
+
 # ============ 偏好数据筛选 ============
-MIN_SCORE_GAP = 2.0          # chosen 与 rejected 的最小分差
+MIN_SCORE_GAP = 0.5          # chosen 与 rejected 的最小分差
+
+# ============ 问题生成配置 ============
+SCENARIO_LIMIT = 0               # 加载场景数上限，0 表示不限制（加载全部）
+DIFFICULTY_LEVELS = [
+    "simple",                # 单工具
+    "parallel",              # 并行多工具
+    "complex_dependency",    # 复杂依赖链
+    "chat",                  # 闲聊/无工具
+    "ambiguous",             # 模糊/歧义问题
+    "adversarial",           # 对抗性扰动
+    "safety",                # 安全/有害请求拒绝
+    "long_chain",            # 长链条（>=4步工具调用）
+]
 
 # ============ 输出文件路径 ============
 QUESTIONS_FILE = OUTPUT_DIR / "questions.jsonl"
