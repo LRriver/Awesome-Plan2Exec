@@ -152,6 +152,8 @@ Built on top of the upstream scenario-toolset data, this module runs a four-stag
 
 ### Core Workflow
 
+![偏好数据合成](images/dpo.png)
+
 Preference data synthesis follows a four-stage pipeline with full async concurrency and threshold-based streaming writes (`FLUSH_THRESHOLD` configurable). Each stage includes explicit structural constraints and filtering rules:
 
 1. **Question Generation (`generate_questions.py`)**

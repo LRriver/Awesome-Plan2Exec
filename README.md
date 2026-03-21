@@ -145,6 +145,8 @@ python output/merge_duplicate_scenarios.py
 
 基于上游场景-工具集数据，经过"问题生成 → 规划采样 → LLM-as-Judge 评分 → 偏好数据提取"四个阶段，产出偏好训练数据，用于后续规划智能体的对齐训练。
 
+
+
 ### 前置条件
 
 - 已完成阶段一，生成 `scenario-toolset-generator/output/scenario_tools_gte10.jsonl`
@@ -152,7 +154,9 @@ python output/merge_duplicate_scenarios.py
 
 ### 核心流程
 
-偏好数据合成采用四阶段流水线，全阶段异步并发执行，带阈值流式写入（`FLUSH_THRESHOLD` 可配置），每阶段都包含明确的结构约束与筛选规则：
+![偏好数据合成](images/dpo.png)
+
+偏好数据合成采用四阶段流水线，全阶段异步并发执行，带阈值流式写入（`FLUSH_THRESHOLD` 可配置），每阶段都包含明确的结构约束与筛选规则:
 
 1. **问题生成（`generate_questions.py`）**
    - 从阶段一数据中筛选场景（支持三种模式：快速验证 3 个 / 少量合成 13 个 / 全量合成 ~4320 个），每个场景生成 8 种难度类型的问题：
