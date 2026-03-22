@@ -6,11 +6,11 @@
 """
 import json
 import asyncio
-import aiohttp
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List
 import time
+from openai import AsyncOpenAI
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 BASE_DIR = SCRIPT_DIR.parent
@@ -59,22 +59,15 @@ def build_prompt(labels_summaries: List[dict]) -> str:
     return prompt
 
 
-async def call_llm(session: aiohttp.ClientSession, prompt: str) -> dict:
+async def call_llm(client: AsyncOpenAI, prompt: str) -> str:
     """调用LLM"""
-    payload = {
-        "model": LLM_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 1000
-    }
-    
-    async with session.post(
-        f"{LLM_BASE_URL}/chat/completions",
-        json=payload,
-        timeout=aiohttp.ClientTimeout(total=60)
-    ) as resp:
-        result = await resp.json()
-        return result["choices"][0]["message"]["content"]
+    response = await client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7,
+        max_tokens=1000,
+    )
+    return response.choices[0].message.content or ""
 
 
 def parse_response(content: str) -> ScenarioResult:
@@ -97,7 +90,7 @@ def parse_response(content: str) -> ScenarioResult:
 
 
 async def process_cluster(
-    session: aiohttp.ClientSession,
+    client: AsyncOpenAI,
     cluster: dict,
     semaphore: asyncio.Semaphore
 ) -> dict:
@@ -121,7 +114,7 @@ async def process_cluster(
         scenarios = []
         for attempt in range(MAX_RETRIES):
             try:
-                content = await call_llm(session, prompt)
+                content = await call_llm(client, prompt)
                 result = parse_response(content)
                 scenarios = result.scenarios
                 break
@@ -175,17 +168,22 @@ async def main():
     
     start_time = time.time()
     results = []
-    
-    async with aiohttp.ClientSession() as session:
-        tasks = [process_cluster(session, c, semaphore) for c in clusters]
-        
-        for i, coro in enumerate(asyncio.as_completed(tasks)):
-            result = await coro
-            results.append(result)
-            
-            if (i + 1) % 50 == 0:
-                elapsed = time.time() - start_time
-                print(f"  已处理: {i+1}/{len(clusters)}, 耗时: {elapsed:.1f}s")
+    client = AsyncOpenAI(
+        base_url=LLM_BASE_URL,
+        api_key="EMPTY",
+        timeout=60.0,
+        default_headers={"Accept-Encoding": "identity"},
+    )
+
+    tasks = [process_cluster(client, c, semaphore) for c in clusters]
+
+    for i, coro in enumerate(asyncio.as_completed(tasks)):
+        result = await coro
+        results.append(result)
+
+        if (i + 1) % 50 == 0:
+            elapsed = time.time() - start_time
+            print(f"  已处理: {i+1}/{len(clusters)}, 耗时: {elapsed:.1f}s")
     
     # 按cluster_id排序
     results.sort(key=lambda x: x["cluster_id"] if isinstance(x["cluster_id"], int) else 999999)

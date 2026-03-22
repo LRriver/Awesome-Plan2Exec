@@ -6,10 +6,10 @@
 """
 import json
 import asyncio
-import aiohttp
 from pathlib import Path
 from pydantic import BaseModel
 import time
+from openai import AsyncOpenAI
 
 # 获取当前脚本所在目录
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -49,22 +49,15 @@ def build_prompt(scenario: str, tool_name: str, tool_desc: str) -> str:
 {{"relevant": true}} 或 {{"relevant": false}}"""
 
 
-async def call_llm(session: aiohttp.ClientSession, prompt: str) -> str:
+async def call_llm(client: AsyncOpenAI, prompt: str) -> str:
     """调用LLM"""
-    payload = {
-        "model": LLM_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3,
-        "max_tokens": 100
-    }
-    
-    async with session.post(
-        f"{LLM_BASE_URL}/chat/completions",
-        json=payload,
-        timeout=aiohttp.ClientTimeout(total=30)
-    ) as resp:
-        result = await resp.json()
-        return result["choices"][0]["message"]["content"]
+    response = await client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_tokens=100,
+    )
+    return response.choices[0].message.content or ""
 
 
 def parse_response(content: str) -> ToolMatch:
@@ -85,7 +78,7 @@ def parse_response(content: str) -> ToolMatch:
 
 
 async def check_tool_relevance(
-    session: aiohttp.ClientSession,
+    client: AsyncOpenAI,
     semaphore: asyncio.Semaphore,
     scenario: str,
     tool_name: str,
@@ -97,7 +90,7 @@ async def check_tool_relevance(
         
         for attempt in range(MAX_RETRIES):
             try:
-                content = await call_llm(session, prompt)
+                content = await call_llm(client, prompt)
                 result = parse_response(content)
                 return (tool_name, tool_desc, result.relevant)
             except Exception as e:
@@ -108,7 +101,7 @@ async def check_tool_relevance(
 
 
 async def process_scenario(
-    session: aiohttp.ClientSession,
+    client: AsyncOpenAI,
     semaphore: asyncio.Semaphore,
     scenario: str,
     tools: dict  # tool_name -> tool_desc
@@ -116,7 +109,7 @@ async def process_scenario(
     """处理单个场景"""
     # 并发检查所有工具
     tasks = [
-        check_tool_relevance(session, semaphore, scenario, name, desc)
+        check_tool_relevance(client, semaphore, scenario, name, desc)
         for name, desc in tools.items()
     ]
     
@@ -166,40 +159,45 @@ async def main():
     start_time = time.time()
     processed_scenarios = 0
     processed_clusters = 0
+    client = AsyncOpenAI(
+        base_url=LLM_BASE_URL,
+        api_key="EMPTY",
+        timeout=30.0,
+        default_headers={"Accept-Encoding": "identity"},
+    )
     
-    async with aiohttp.ClientSession() as session:
-        for cluster in clusters:
-            cluster_id = cluster['cluster_id']
-            scenarios = cluster['scenarios']
-            
-            # 收集该簇所有工具 (从所有toolsets的tools合并)
-            cluster_tools = {}
-            for ts in cluster['toolsets']:
-                # 只收集called_tools_unique中的工具
-                for tool_name in ts.get('called_tools_unique', []):
-                    if tool_name in ts.get('tools', {}):
-                        cluster_tools[tool_name] = ts['tools'][tool_name]
-            
-            if not cluster_tools:
-                continue
-            
-            # 处理该簇的每个场景
-            cluster_results = []
-            for scenario in scenarios:
-                result = await process_scenario(
-                    session, semaphore, scenario, cluster_tools
-                )
-                cluster_results.append(result)
-                processed_scenarios += 1
-            
-            # 每处理完一个簇就写入文件
-            with open(OUTPUT_FILE, 'a', encoding='utf-8') as f:
-                for result in cluster_results:
-                    f.write(json.dumps(result, ensure_ascii=False) + '\n')
-            
-            processed_clusters += 1
-            elapsed = time.time() - start_time
-            print(f"  簇{cluster_id}完成, 已处理: {processed_clusters}/{len(clusters)}簇, {processed_scenarios}/{total_scenarios}场景, 耗时: {elapsed:.1f}s")
+    for cluster in clusters:
+        cluster_id = cluster['cluster_id']
+        scenarios = cluster['scenarios']
+        
+        # 收集该簇所有工具 (从所有toolsets的tools合并)
+        cluster_tools = {}
+        for ts in cluster['toolsets']:
+            # 只收集called_tools_unique中的工具
+            for tool_name in ts.get('called_tools_unique', []):
+                if tool_name in ts.get('tools', {}):
+                    cluster_tools[tool_name] = ts['tools'][tool_name]
+        
+        if not cluster_tools:
+            continue
+        
+        # 处理该簇的每个场景
+        cluster_results = []
+        for scenario in scenarios:
+            result = await process_scenario(
+                client, semaphore, scenario, cluster_tools
+            )
+            cluster_results.append(result)
+            processed_scenarios += 1
+        
+        # 每处理完一个簇就写入文件
+        with open(OUTPUT_FILE, 'a', encoding='utf-8') as f:
+            for result in cluster_results:
+                f.write(json.dumps(result, ensure_ascii=False) + '\n')
+        
+        processed_clusters += 1
+        elapsed = time.time() - start_time
+        print(f"  簇{cluster_id}完成, 已处理: {processed_clusters}/{len(clusters)}簇, {processed_scenarios}/{total_scenarios}场景, 耗时: {elapsed:.1f}s")
     
     elapsed = time.time() - start_time
     print(f"\n完成! 耗时: {elapsed:.1f}s")
