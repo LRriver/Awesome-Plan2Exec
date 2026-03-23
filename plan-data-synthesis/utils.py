@@ -5,38 +5,70 @@ Plan2Exec 数据合成流水线 — 公共工具函数
 import asyncio
 import json
 
-import aiohttp
+from openai import AsyncOpenAI
 
 import config
 
 
+_CLIENT: AsyncOpenAI | None = None
+
+
+def _get_openai_client() -> AsyncOpenAI:
+    """懒加载 OpenAI Async 客户端。"""
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = AsyncOpenAI(
+            base_url=config.LLM_BASE_URL,
+            api_key=config.LLM_API_KEY,
+            timeout=120.0,
+            # Avoid content-encoding compatibility issues across gateways.
+            default_headers={"Accept-Encoding": "identity"},
+        )
+    return _CLIENT
+
+
+def _extract_content(resp) -> str:
+    """提取 chat.completions 响应中的文本内容。"""
+    content = resp.choices[0].message.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            text = getattr(item, "text", None)
+            if text:
+                parts.append(text)
+            elif isinstance(item, dict) and item.get("text"):
+                parts.append(item["text"])
+        if parts:
+            return "".join(parts)
+    return ""
+
+
 async def call_llm(
-    session: aiohttp.ClientSession,
     messages: list[dict],
     temperature: float = 0.3,
     top_p: float = 1.0,
 ) -> str:
     """调用 LLM，返回 content 字符串。
 
-    使用 aiohttp 异步调用 OpenAI 格式 API，超时 120 秒，
+    使用 OpenAI Async SDK 调用 chat.completions，
     失败时采用指数退避策略重试最多 MAX_RETRIES 次。
     """
-    payload = {
+    client = _get_openai_client()
+    request_kwargs = {
         "model": config.LLM_MODEL,
         "messages": messages,
         "temperature": temperature,
         "top_p": top_p,
     }
+    if getattr(config, "LLM_REASONING_SPLIT", False):
+        request_kwargs["extra_body"] = {"reasoning_split": True}
+
     for attempt in range(config.MAX_RETRIES + 1):
         try:
-            async with session.post(
-                f"{config.LLM_BASE_URL}/chat/completions",
-                json=payload,
-                headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                result = await resp.json()
-                return result["choices"][0]["message"]["content"]
+            result = await client.chat.completions.create(**request_kwargs)
+            return _extract_content(result)
         except Exception as e:
             if attempt < config.MAX_RETRIES:
                 wait = config.RETRY_BACKOFF_BASE * (2 ** attempt)

@@ -14,6 +14,7 @@ OUTPUT_DIR = SCRIPT_DIR / "output"
 LLM_BASE_URL = "your-llm-api-url"   # 你的 LLM API 地址
 LLM_MODEL = "your-model-name"       # 模型名
 LLM_API_KEY = "your-api-key"        # API Key
+LLM_REASONING_SPLIT = True           # 若平台支持，将推理内容与正文拆分
 
 #   并发控制  
 MAX_CONCURRENCY = 5          # Semaphore 最大并发数 (3-5)
@@ -58,14 +59,14 @@ MIN_SCORE_GAP = 0.5          # chosen 与 rejected 的最小分差
 #   问题生成配置  
 SCENARIO_LIMIT = 0               # 加载场景数上限，0 表示不限制（加载全部）
 DIFFICULTY_LEVELS = [
+    "chat",                  # 闲聊/无工具
     "simple",                # 单工具
     "parallel",              # 并行多工具
     "complex_dependency",    # 复杂依赖链
-    "chat",                  # 闲聊/无工具
+    "long_chain",            # 长链条（>=4步工具调用）
     "ambiguous",             # 模糊/歧义问题
     "adversarial",           # 对抗性扰动
     "safety",                # 安全/有害请求拒绝
-    "long_chain",            # 长链条（>=4步工具调用）
 ]
 
 #   输出文件路径  
