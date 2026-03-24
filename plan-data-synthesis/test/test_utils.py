@@ -61,85 +61,83 @@ class TestParseJsonResponse:
 
 
 # ──────────────────────────────────────────────
-# call_llm — unit tests (mocked aiohttp)
+# call_llm — unit tests (mocked OpenAI SDK)
 # ──────────────────────────────────────────────
 
 class TestCallLlm:
-    """Unit tests for call_llm using mocked aiohttp session."""
+    """Unit tests for call_llm using mocked OpenAI async client."""
 
     @pytest.mark.asyncio
     async def test_successful_call(self):
         """call_llm returns content on first successful attempt."""
-        mock_response = AsyncMock()
-        mock_response.json = AsyncMock(return_value={
-            "choices": [{"message": {"content": "hello"}}]
-        })
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content="hello"))]
 
-        session = MagicMock()
-        session.post = MagicMock(return_value=mock_response)
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=resp)
 
-        result = await call_llm(session, [{"role": "user", "content": "hi"}])
+        with patch("utils._get_openai_client", return_value=mock_client):
+            result = await call_llm([{"role": "user", "content": "hi"}])
         assert result == "hello"
 
     @pytest.mark.asyncio
     async def test_retry_on_failure(self):
         """call_llm retries on failure and succeeds on second attempt."""
-        # First call raises, second succeeds
-        fail_response = MagicMock()
-        fail_response.__aenter__ = AsyncMock(side_effect=Exception("timeout"))
-        fail_response.__aexit__ = AsyncMock(return_value=False)
+        ok_resp = MagicMock()
+        ok_resp.choices = [MagicMock(message=MagicMock(content="ok"))]
 
-        ok_response = AsyncMock()
-        ok_response.json = AsyncMock(return_value={
-            "choices": [{"message": {"content": "ok"}}]
-        })
-        ok_response.__aenter__ = AsyncMock(return_value=ok_response)
-        ok_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.post = MagicMock(side_effect=[fail_response, ok_response])
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[Exception("timeout"), ok_resp])
 
         with patch("utils.asyncio.sleep", new_callable=AsyncMock):
-            result = await call_llm(session, [{"role": "user", "content": "hi"}])
+            with patch("utils._get_openai_client", return_value=mock_client):
+                result = await call_llm([{"role": "user", "content": "hi"}])
         assert result == "ok"
 
     @pytest.mark.asyncio
     async def test_raises_after_max_retries(self):
         """call_llm raises after exhausting all retries."""
-        fail_response = MagicMock()
-        fail_response.__aenter__ = AsyncMock(side_effect=Exception("fail"))
-        fail_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.post = MagicMock(return_value=fail_response)
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=Exception("fail"))
 
         with patch("utils.asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(Exception, match="fail"):
-                await call_llm(session, [{"role": "user", "content": "hi"}])
+                with patch("utils._get_openai_client", return_value=mock_client):
+                    await call_llm([{"role": "user", "content": "hi"}])
 
     @pytest.mark.asyncio
     async def test_uses_config_values(self):
-        """call_llm builds payload from config values."""
-        mock_response = AsyncMock()
-        mock_response.json = AsyncMock(return_value={
-            "choices": [{"message": {"content": "resp"}}]
-        })
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
+        """call_llm passes expected args to OpenAI SDK."""
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content="resp"))]
 
-        session = MagicMock()
-        session.post = MagicMock(return_value=mock_response)
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=resp)
 
-        await call_llm(session, [{"role": "user", "content": "test"}], temperature=0.8, top_p=0.9)
+        with patch("utils._get_openai_client", return_value=mock_client):
+            await call_llm([{"role": "user", "content": "test"}], temperature=0.8, top_p=0.9)
 
-        # Verify the post was called with correct URL and payload
-        call_args = session.post.call_args
-        assert "/chat/completions" in call_args[0][0]
-        payload = call_args[1]["json"]
-        assert payload["temperature"] == 0.8
-        assert payload["top_p"] == 0.9
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["model"]
+        assert call_kwargs["temperature"] == 0.8
+        assert call_kwargs["top_p"] == 0.9
+        assert call_kwargs["extra_body"] == {"reasoning_split": True}
+
+    @pytest.mark.asyncio
+    async def test_disable_reasoning_split(self):
+        """call_llm omits extra_body when reasoning split is disabled."""
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content="resp"))]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=resp)
+
+        with patch("utils._get_openai_client", return_value=mock_client):
+            with patch("utils.config.LLM_REASONING_SPLIT", False):
+                await call_llm([{"role": "user", "content": "test"}], temperature=0.8, top_p=0.9)
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert "extra_body" not in call_kwargs
 
 
 # ──────────────────────────────────────────────

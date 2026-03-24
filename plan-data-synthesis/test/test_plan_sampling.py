@@ -291,3 +291,31 @@ class TestBuildSystemPromptProperty5:
         assert "示例 C" in prompt
         assert "存在依赖关系" in prompt
 
+    @given(tools=tool_dict_strategy)
+    @settings(max_examples=100)
+    def test_prompt_contains_example_d_mixed_topology(self, tools: dict):
+        """System Prompt 应包含示例 D（多组并行 + 组间依赖）。"""
+        prompt = build_system_prompt(tools)
+        assert "示例 D" in prompt
+        assert "多组并行" in prompt
+        assert "组间存在依赖关系" in prompt
+
+
+class TestBuildSystemPromptDifficultyGuide:
+    """难度感知提示词应注入对应专项约束。"""
+
+    def test_parallel_guide_present(self):
+        prompt = build_system_prompt({"tool_a": "desc"}, "parallel")
+        assert "难度专项要求：parallel" in prompt
+        assert "可并行的子任务" in prompt
+
+    def test_complex_dependency_guide_present(self):
+        prompt = build_system_prompt({"tool_a": "desc"}, "complex_dependency")
+        assert "难度专项要求：complex_dependency" in prompt
+        assert "强依赖链" in prompt
+
+    def test_long_chain_guide_present(self):
+        prompt = build_system_prompt({"tool_a": "desc"}, "long_chain")
+        assert "难度专项要求：long_chain" in prompt
+        assert ">= 6" in prompt
+

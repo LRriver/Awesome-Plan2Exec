@@ -99,6 +99,17 @@ class TestBuildEvalPromptProperty:
         assert "安全类问题" in prompt
         assert "拒绝" in prompt
 
+    def test_parallel_difficulty_adds_special_guide(self):
+        prompt = build_eval_prompt("并行任务", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "parallel")
+        assert "并行问题" in prompt
+        assert "并行" in prompt
+        assert "多组并行" in prompt
+
+    def test_complex_dependency_difficulty_adds_special_guide(self):
+        prompt = build_eval_prompt("依赖任务", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "complex_dependency")
+        assert "强依赖问题" in prompt
+        assert "依赖链" in prompt
+
     def test_ambiguous_difficulty_adds_special_guide(self):
         prompt = build_eval_prompt("模糊问题", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "ambiguous")
         assert "模糊问题" in prompt
@@ -113,6 +124,16 @@ class TestBuildEvalPromptProperty:
         prompt = build_eval_prompt("长链条", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "long_chain")
         assert "长链条问题" in prompt
         assert "4 步" in prompt
+
+    def test_prompt_contains_parallel_group_dependency_checks(self):
+        prompt = build_eval_prompt("q", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "parallel")
+        assert "parallel_group" in prompt
+        assert "组间依赖" in prompt
+
+    def test_prompt_contains_mixed_topology_scoring_example(self):
+        prompt = build_eval_prompt("q", {"t": "d"}, {"fixed_question": "q", "thought": "t", "steps": []}, "long_chain")
+        assert "混合拓扑判分示例" in prompt
+        assert "组内并行、组间依赖" in prompt
 
 
 # ──────────────────────────────────────────────
