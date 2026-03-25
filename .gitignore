@@ -224,3 +224,4 @@ plan-data-synthesis/config.py
 
 # Large data files (download separately)
 scenario-toolset-generator/data/graphsyn.jsonl
+plan-data-synthesis/output/questions.jsonl
