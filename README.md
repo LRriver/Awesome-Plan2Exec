@@ -175,7 +175,9 @@ python output/merge_duplicate_scenarios.py
    - 包含安全与伦理处理规则：有害请求应被拒绝，模糊问题应识别歧义。
 
 3. **自动评估（`evaluate_plans.py`）**
-   - 借鉴 RubricHub 的细粒度 Rubric 思路，用 LLM-as-Judge 按 10 个维度打分，每个维度有明确的扣分锚点：
+   ![judge](images/judge.png)
+
+   - 借鉴 [RubricHub](https://github.com/teqkilla/RubricHub) 的细粒度 Rubric 思路，用 LLM-as-Judge 按 10 个维度打分，每个维度有明确的扣分锚点：
      - 工具层：工具存在性、工具语义匹配
      - 逻辑层：依赖合理性、无循环依赖、数据流完整性
      - 完整性层：显性需求覆盖、隐性需求识别
@@ -183,6 +185,28 @@ python output/merge_duplicate_scenarios.py
      - 思维层：推理深度、思维一致性
    - 针对 safety/ambiguous/adversarial/long_chain 设有专门的评判指引。
    - 每个计划多次采样评分（默认 3 次）取中位数，减少单次评分随机性。
+
+   **Rubric（评分细则）说明：**
+   - Rubric 指一套可复现的评分量表：定义"评什么、怎么扣分、总分怎么算"，避免纯主观打分。
+   - 10 维度含义：
+     - `tool_existence`：步骤里使用的工具名是否真实存在于可用工具集。
+     - `tool_semantic_match`：工具功能是否与步骤任务语义匹配。
+     - `dependency_logic`：步骤依赖是否正确表达先后关系与并行关系。
+     - `no_circular_dep`：依赖图是否无环、无悬空引用。
+     - `data_flow_integrity`：后续步骤引用的数据是否由前序步骤真实产出。
+     - `completeness`：用户显性需求是否被完整覆盖。
+     - `implicit_needs`：是否识别异常处理、安全校验等隐性需求。
+     - `efficiency`：是否避免冗余步骤，保持合理粒度。
+     - `thought_depth`：是否有工具取舍、风险分析等实质推理。
+     - `thought_consistency`：thought、steps、tools、fixed_question 是否一致。
+   - 默认权重（`config.py`）：
+     - `tool_existence` 0.15, `tool_semantic_match` 0.15
+     - `dependency_logic` 0.12, `completeness` 0.12
+     - `efficiency` 0.10
+     - `data_flow_integrity` 0.08, `implicit_needs` 0.08, `thought_depth` 0.08
+     - `thought_consistency` 0.07, `no_circular_dep` 0.05
+   - 总分计算：`total_score = Σ(各维度分数 × 对应权重)`。
+   - 稳定性策略：同一计划评估 3 次后按维度取中位数，再计算加权总分。
 
 4. **偏好构建（`build_preference.py`）**
    - 每条问题内按总分排序，选出高分方案与低分方案构成偏好对。

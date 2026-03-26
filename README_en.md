@@ -173,7 +173,9 @@ Preference data synthesis follows a four-stage pipeline with full async concurre
    - Includes safety and ethics handling rules: harmful requests should be refused, ambiguous questions should identify ambiguity.
 
 3. **Automatic Evaluation (`evaluate_plans.py`)**
-   - Inspired by RubricHub's fine-grained rubric approach, uses LLM-as-Judge to score on 10 dimensions with explicit deduction anchors:
+   
+   ![judge](images/judge.png)
+   - Inspired by [RubricHub's](https://github.com/teqkilla/RubricHub) fine-grained rubric approach, uses LLM-as-Judge to score on 10 dimensions with explicit deduction anchors:
      - Tool layer: tool existence, tool semantic match
      - Logic layer: dependency logic, no circular dependencies, data flow integrity
      - Completeness layer: explicit requirement coverage, implicit needs identification
@@ -181,6 +183,28 @@ Preference data synthesis follows a four-stage pipeline with full async concurre
      - Reasoning layer: thought depth, thought consistency
    - Specialized evaluation guides for safety/ambiguous/adversarial/long_chain question types.
    - Multiple scoring samples per plan (default 3) with median aggregation to reduce single-score randomness.
+
+   **Rubric details:**
+   - A rubric is a reproducible scoring protocol that defines what to evaluate, how to deduct points, and how to compute final scores.
+   - Meaning of each dimension:
+     - `tool_existence`: whether tool names used in steps actually exist in the available toolset.
+     - `tool_semantic_match`: whether selected tools semantically match each step's intent.
+     - `dependency_logic`: whether dependencies correctly encode ordering and parallel structure.
+     - `no_circular_dep`: whether the dependency graph is acyclic and has no dangling references.
+     - `data_flow_integrity`: whether downstream steps consume outputs that upstream steps can truly produce.
+     - `completeness`: whether explicit user requirements are fully covered.
+     - `implicit_needs`: whether implicit needs (e.g., validation, fallback, safety checks) are recognized.
+     - `efficiency`: whether the plan avoids redundant steps and keeps proper granularity.
+     - `thought_depth`: whether reasoning includes real tool trade-offs and risk analysis.
+     - `thought_consistency`: whether thought, steps, tools, and fixed_question are mutually consistent.
+   - Default weights (`config.py`):
+     - `tool_existence` 0.15, `tool_semantic_match` 0.15
+     - `dependency_logic` 0.12, `completeness` 0.12
+     - `efficiency` 0.10
+     - `data_flow_integrity` 0.08, `implicit_needs` 0.08, `thought_depth` 0.08
+     - `thought_consistency` 0.07, `no_circular_dep` 0.05
+   - Final score formula: `total_score = Σ(dimension_score × weight)`.
+   - Stability strategy: evaluate the same plan 3 times, aggregate median per dimension, then compute weighted total.
 
 4. **Preference Construction (`build_preference.py`)**
    - Rank plans per question by total score and form preference pairs from higher-scored vs. lower-scored candidates.
