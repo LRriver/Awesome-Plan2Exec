@@ -205,6 +205,12 @@ python output/merge_duplicate_scenarios.py
      - `efficiency` 0.10
      - `data_flow_integrity` 0.08, `implicit_needs` 0.08, `thought_depth` 0.08
      - `thought_consistency` 0.07, `no_circular_dep` 0.05
+   - 权重划分思路：
+     - 优先保证"可执行且工具选对"，因此工具存在性与语义匹配权重最高。
+     - 其次保证"流程正确、任务做全"，依赖逻辑与显性需求覆盖设为次高权重。
+     - 效率单独保留中等权重，用于约束冗余步骤和不合理粒度。
+     - 数据流、隐性需求、推理深度用于区分中高质量方案。
+     - 一致性与无环依赖作为基础约束项，防止明显结构错误。
    - 总分计算：`total_score = Σ(各维度分数 × 对应权重)`。
    - 稳定性策略：同一计划评估 3 次后按维度取中位数，再计算加权总分。
 

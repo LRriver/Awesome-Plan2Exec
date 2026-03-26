@@ -203,6 +203,12 @@ Preference data synthesis follows a four-stage pipeline with full async concurre
      - `efficiency` 0.10
      - `data_flow_integrity` 0.08, `implicit_needs` 0.08, `thought_depth` 0.08
      - `thought_consistency` 0.07, `no_circular_dep` 0.05
+   - Weight allocation rationale:
+     - Highest priority is executability and correct tool choice, so tool existence and semantic matching have the largest weights.
+     - Next is structural correctness and task coverage, so dependency logic and explicit requirement coverage use the second-highest weights.
+     - Efficiency keeps a standalone mid-level weight to penalize redundant or poorly granular plans.
+     - Data-flow integrity, implicit needs, and thought depth help separate medium vs high-quality plans.
+     - Consistency and acyclic dependency are baseline constraint dimensions to catch obvious structural issues.
    - Final score formula: `total_score = Σ(dimension_score × weight)`.
    - Stability strategy: evaluate the same plan 3 times, aggregate median per dimension, then compute weighted total.
 
