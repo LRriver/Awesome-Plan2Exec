@@ -9,7 +9,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import config
-from build_preference import build_preference_pair
+from build_preference import build_preference_pair, build_ranked_candidates, assign_quality_bucket
 
 
 # ──────────────────────────────────────────────
@@ -139,3 +139,38 @@ class TestBuildPreferencePairUnit:
         assert "content" in step
         assert "tools" in step
         assert "dependencies" in step
+
+
+class TestRankedCandidates:
+    def test_assign_quality_bucket(self):
+        assert assign_quality_bucket(8.7) == "strong"
+        assert assign_quality_bucket(6.4) == "medium"
+        assert assign_quality_bucket(3.2) == "weak"
+        assert assign_quality_bucket(1.5) == "invalid"
+
+    def test_build_ranked_candidates_preserves_score_order_and_metadata(self):
+        question_data = _make_question_data([6.0, 9.0, 3.0])
+        question_data["evaluated_plans"][2]["plan"]["negative_type"] = "wrong_tool"
+        question_data["evaluated_plans"][2]["plan"]["quality_bucket"] = "weak"
+
+        ranked = build_ranked_candidates(question_data)
+
+        assert [item["score"] for item in ranked["candidates"]] == [9.0, 6.0, 3.0]
+        assert ranked["candidates"][0]["quality_bucket"] == "strong"
+        assert ranked["candidates"][1]["quality_bucket"] == "medium"
+        assert ranked["candidates"][2]["quality_bucket"] == "weak"
+        assert ranked["candidates"][2]["negative_type"] == "wrong_tool"
+        assert "negative_type" not in ranked["candidates"][2]["plan"]
+        assert "quality_bucket" not in ranked["candidates"][2]["plan"]
+
+    def test_preference_pair_strips_plan_metadata(self):
+        question_data = _make_question_data([9.0, 4.0])
+        question_data["evaluated_plans"][1]["plan"]["negative_type"] = "wrong_tool"
+        question_data["evaluated_plans"][1]["plan"]["quality_bucket"] = "weak"
+
+        result = build_preference_pair(question_data)
+
+        assert result is not None
+        assert result["rejected_negative_type"] == "wrong_tool"
+        assert "negative_type" not in result["rejected_plan"]
+        assert "quality_bucket" not in result["rejected_plan"]

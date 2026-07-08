@@ -219,6 +219,16 @@ scenario-toolset-generator/clustering/cluster_labels copy.npy
 # Plan-data-synthesis config (contains API keys)
 plan-data-synthesis/config.py
 
+# Local development notes and OS files
+.DS_Store
+docs/
+
+# Large local synthesis runs; publish datasets externally and link them from README
+plan-data-synthesis/output/production_selected_700/
+plan-data-synthesis/output/*selected*/
+plan-data-synthesis/output/production_*/
+plan-data-synthesis/output/iteration_*/
+
 # Plan-data-synthesis output files
 # plan-data-synthesis/output/
 

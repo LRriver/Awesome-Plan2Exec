@@ -24,6 +24,60 @@ def plans_are_similar(plan1: dict, plan2: dict) -> bool:
     return extract_tool_sequence(plan1) == extract_tool_sequence(plan2)
 
 
+def strip_plan_metadata(plan: dict) -> dict:
+    """Remove training-only metadata from plan bodies used as answers."""
+    if not isinstance(plan, dict):
+        return plan
+    blocked = {"negative_type", "quality_bucket"}
+    return {key: value for key, value in plan.items() if key not in blocked}
+
+
+def assign_quality_bucket(score: float) -> str:
+    """按分数分桶，便于后续抽取 strong/medium/weak 训练视图。"""
+    buckets = getattr(
+        config,
+        "QUALITY_BUCKETS",
+        {"strong": 8.5, "medium": 6.0, "weak": 3.0},
+    )
+    if score >= buckets.get("strong", 8.5):
+        return "strong"
+    if score >= buckets.get("medium", 6.0):
+        return "medium"
+    if score >= buckets.get("weak", 3.0):
+        return "weak"
+    return "invalid"
+
+
+def build_ranked_candidates(question_data: dict) -> dict:
+    """构建同题多候选 ranked list，保留分数、分桶和负样本类型。"""
+    evaluated_plans = sorted(
+        question_data.get("evaluated_plans", []),
+        key=lambda x: x["evaluation"]["total_score"],
+        reverse=True,
+    )
+    candidates = []
+    for item in evaluated_plans:
+        plan = item["plan"]
+        score = item["evaluation"]["total_score"]
+        candidates.append({
+            "plan": strip_plan_metadata(plan),
+            "score": score,
+            "quality_bucket": assign_quality_bucket(score),
+            "negative_type": plan.get("negative_type"),
+            "evaluation": item["evaluation"],
+        })
+
+    return {
+        "scenario": question_data["scenario"],
+        "tools": question_data["tools"],
+        "difficulty": question_data["difficulty"],
+        "query_style": question_data.get("query_style"),
+        "difficulty_subtype": question_data.get("difficulty_subtype"),
+        "user_query": question_data["query"],
+        "candidates": candidates,
+    }
+
+
 def build_preference_pair(question_data: dict) -> dict | None:
     """从单个问题的评分结果中提取 DPO 偏好数据对。"""
     evaluated_plans = question_data.get("evaluated_plans", [])
@@ -63,10 +117,13 @@ def build_preference_pair(question_data: dict) -> dict | None:
         "tools": question_data["tools"],
         "difficulty": question_data["difficulty"],
         "user_query": question_data["query"],
-        "chosen_plan": chosen["plan"],
-        "rejected_plan": rejected["plan"],
+        "chosen_plan": strip_plan_metadata(chosen["plan"]),
+        "rejected_plan": strip_plan_metadata(rejected["plan"]),
         "chosen_score": chosen_score,
         "rejected_score": rejected["evaluation"]["total_score"],
+        "chosen_quality_bucket": assign_quality_bucket(chosen_score),
+        "rejected_quality_bucket": assign_quality_bucket(rejected["evaluation"]["total_score"]),
+        "rejected_negative_type": rejected["plan"].get("negative_type"),
         "chosen_evaluation": chosen["evaluation"],
         "rejected_evaluation": rejected["evaluation"],
     }
@@ -93,20 +150,36 @@ def main():
 
     # 流式写入，带缓冲
     buffer = []
+    ranked_buffer = []
     valid = 0
     discarded = 0
 
     with open(config.PREFERENCE_DATA_FILE, "w", encoding="utf-8") as f:
-        for question_data in evaluated_data:
-            pair = build_preference_pair(question_data)
-            if pair is not None:
-                buffer.append(json.dumps(pair, ensure_ascii=False) + "\n")
-                valid += 1
-                if len(buffer) >= config.FLUSH_THRESHOLD:
-                    f.writelines(buffer)
-                    buffer.clear()
-            else:
-                discarded += 1
+        ranked_path = getattr(config, "RANKED_CANDIDATES_FILE", None)
+        ranked_file = open(ranked_path, "w", encoding="utf-8") if ranked_path else None
+        try:
+            for question_data in evaluated_data:
+                ranked = build_ranked_candidates(question_data)
+                if ranked_file:
+                    ranked_buffer.append(json.dumps(ranked, ensure_ascii=False) + "\n")
+                    if len(ranked_buffer) >= config.FLUSH_THRESHOLD:
+                        ranked_file.writelines(ranked_buffer)
+                        ranked_buffer.clear()
+
+                pair = build_preference_pair(question_data)
+                if pair is not None:
+                    buffer.append(json.dumps(pair, ensure_ascii=False) + "\n")
+                    valid += 1
+                    if len(buffer) >= config.FLUSH_THRESHOLD:
+                        f.writelines(buffer)
+                        buffer.clear()
+                else:
+                    discarded += 1
+        finally:
+            if ranked_file:
+                if ranked_buffer:
+                    ranked_file.writelines(ranked_buffer)
+                ranked_file.close()
         # 刷盘剩余
         if buffer:
             f.writelines(buffer)

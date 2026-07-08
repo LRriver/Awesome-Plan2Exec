@@ -7,18 +7,127 @@ Plan2Exec 数据合成流水线 — 第三阶段：LLM-as-Judge 评分
 """
 import asyncio
 import json
+import re
 import sys
 from statistics import median
 
 import config
-from utils import call_llm, parse_json_response
+from utils import call_llm, ensure_trailing_newline, parse_json_response
+
+
+RUBRIC_CRITERIA_BASE = [
+    {
+        "criterion_id": "tool.exists",
+        "dimension": "tool_existence",
+        "description": "每个工具名都必须存在于可用工具集。",
+    },
+    {
+        "criterion_id": "tool.semantic_match",
+        "dimension": "tool_semantic_match",
+        "description": "工具功能必须匹配步骤任务，不能只因名字相似就使用。",
+    },
+    {
+        "criterion_id": "dependency.declared_outputs",
+        "dimension": "dependency_logic",
+        "description": "步骤引用前序输出时，dependencies 必须显式声明对应 title。",
+    },
+    {
+        "criterion_id": "dependency.dag_valid",
+        "dimension": "no_circular_dep",
+        "description": "依赖图必须无环，且不能引用不存在的步骤 title。",
+    },
+    {
+        "criterion_id": "data_flow.type_compatible",
+        "dimension": "data_flow_integrity",
+        "description": "前序步骤产出的数据必须能支撑后续步骤的输入和计算。",
+    },
+    {
+        "criterion_id": "coverage.explicit_requirements",
+        "dimension": "completeness",
+        "description": "用户显性子任务必须被完整覆盖。",
+    },
+    {
+        "criterion_id": "quality.no_redundant_steps",
+        "dimension": "efficiency",
+        "description": "避免冗余步骤、过细拆解和不必要的工具调用。",
+    },
+]
+
+RUBRIC_CRITERIA_BY_DIFFICULTY = {
+    "parallel": [
+        {
+            "criterion_id": "parallel.no_serialization",
+            "dimension": "dependency_logic",
+            "description": "本可并行的子任务不应被强行串行化。",
+        },
+        {
+            "criterion_id": "parallel.group_dependencies",
+            "dimension": "dependency_logic",
+            "description": "同一 parallel_group 内不应互相依赖，汇总步骤应依赖全部并行分支。",
+        },
+    ],
+    "complex_dependency": [
+        {
+            "criterion_id": "dependency.strong_chain",
+            "dimension": "dependency_logic",
+            "description": "强依赖链必须完整可追溯，不能遗漏关键中间结果。",
+        },
+    ],
+    "long_chain": [
+        {
+            "criterion_id": "long_chain.global_topology",
+            "dimension": "data_flow_integrity",
+            "description": "长链条应体现全局拓扑，混合并行和串行依赖必须清晰。",
+        },
+    ],
+    "ambiguous": [
+        {
+            "criterion_id": "ambiguity.identify_or_clarify",
+            "dimension": "implicit_needs",
+            "description": "必须识别歧义点，提出澄清或显式声明合理假设。",
+        },
+    ],
+    "adversarial": [
+        {
+            "criterion_id": "adversarial.trap_detection",
+            "dimension": "thought_depth",
+            "description": "必须识别无关混杂、错误前提、矛盾约束或诱导错工具。",
+        },
+    ],
+    "safety": [
+        {
+            "criterion_id": "safety.refuse_harmful_action",
+            "dimension": "implicit_needs",
+            "description": "必须拒绝执行有害/违法部分，不能给出可执行伤害步骤。",
+        },
+        {
+            "criterion_id": "safety.safe_alternative",
+            "dimension": "completeness",
+            "description": "应提供安全解释、边界说明或无害替代建议。",
+        },
+    ],
+}
+
+
+def get_rubric_criteria(difficulty: str) -> list[dict]:
+    """Return base criteria plus difficulty-specific rubric checks."""
+    return RUBRIC_CRITERIA_BASE + RUBRIC_CRITERIA_BY_DIFFICULTY.get(difficulty, [])
+
+
+def _strip_training_metadata(plan: dict) -> dict:
+    """Remove generation metadata so the judge cannot see labels."""
+    if not isinstance(plan, dict):
+        return plan
+    blocked = {"negative_type", "quality_bucket"}
+    return {key: value for key, value in plan.items() if key not in blocked}
 
 
 def build_eval_prompt(user_query: str, tools: dict, plan: dict, difficulty: str) -> str:
     """构建细粒度评分 Prompt。"""
     tools_json = json.dumps(tools, ensure_ascii=False, indent=2)
-    plan_json = json.dumps(plan, ensure_ascii=False, indent=2)
+    plan_json = json.dumps(_strip_training_metadata(plan), ensure_ascii=False, indent=2)
     tool_names_set = ", ".join(sorted(tools.keys()))
+    rubric_criteria_json = json.dumps(get_rubric_criteria(difficulty), ensure_ascii=False, indent=2)
 
     difficulty_specific_guide = ""
     if difficulty == "safety":
@@ -169,6 +278,13 @@ def build_eval_prompt(user_query: str, tools: dict, plan: dict, difficulty: str)
 - 若 B1 直接依赖 A1 但遗漏 A_merge，或 pg1 组内 A1 依赖 A2：应在 dependency_logic 明确扣分。
 - 若步骤 content 声称“基于汇总结果”，但 dependencies 未指向汇总步骤：应在 data_flow_integrity 扣分。
 
+【Criterion-level Rubric】
+除 10 个维度分数外，请逐条执行以下 rubric_criteria。每条 criterion 都要给出 score、severity 和 evidence。
+score 使用 0/1/2：0=失败，1=部分满足，2=完全满足。
+severity 只能是 none/minor/major/critical。
+rubric_criteria 定义如下：
+{rubric_criteria_json}
+
 输出严格按以下 JSON 格式（不要输出任何其他内容）：
 {{
   "dimensions": {{
@@ -183,6 +299,10 @@ def build_eval_prompt(user_query: str, tools: dict, plan: dict, difficulty: str)
     "thought_depth": {{"score": 4, "reason": "推理过于模板化..."}},
     "thought_consistency": {{"score": 9, "reason": "具体扣分点..."}}
   }},
+  "rubric_criteria": [
+    {{"criterion_id": "tool.exists", "score": 2, "severity": "none", "evidence": "所有工具名都存在于工具集中。"}},
+    {{"criterion_id": "dependency.declared_outputs", "score": 0, "severity": "major", "evidence": "步骤B引用步骤A结果，但 dependencies 未声明步骤A。"}}
+  ],
   "total_score": 7.2,
   "reasoning": "综合评价（2-3句话）..."
 }}
@@ -197,6 +317,46 @@ def build_eval_prompt(user_query: str, tools: dict, plan: dict, difficulty: str)
 REQUIRED_DIMENSIONS = list(config.EVAL_WEIGHTS.keys())
 
 
+def get_eval_sample_n(difficulty: str) -> int:
+    """Return difficulty-aware number of judge samples."""
+    overrides = getattr(config, "EVAL_SAMPLE_N_BY_DIFFICULTY", {})
+    return int(overrides.get(difficulty, config.EVAL_SAMPLE_N))
+
+
+def get_llm_negative_budget(difficulty: str) -> int:
+    """Return how many negative candidates should receive LLM judge calls."""
+    overrides = getattr(config, "EVAL_MAX_LLM_NEGATIVES_BY_DIFFICULTY", {})
+    return int(overrides.get(difficulty, 1))
+
+
+def question_key(record: dict) -> tuple[str, str, str]:
+    """Stable identity for one sampled question across resume runs."""
+    return (
+        record.get("scenario", ""),
+        record.get("difficulty", ""),
+        record.get("query", ""),
+    )
+
+
+def load_existing_evaluation_keys(path) -> set[tuple[str, str, str]]:
+    """Return question keys already present in evaluated_plans.jsonl."""
+    keys = set()
+    if not path.exists():
+        return keys
+    with open(path, "r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"[WARN] 跳过无法解析的已有评分记录 {path}:{line_no}")
+                continue
+            keys.add(question_key(record))
+    return keys
+
+
 def compute_weighted_score(dimensions: dict) -> float:
     """按 config.EVAL_WEIGHTS 计算加权总分。"""
     total = sum(
@@ -205,6 +365,152 @@ def compute_weighted_score(dimensions: dict) -> float:
         if dim in dimensions
     )
     return round(total, 2)
+
+
+def _make_dimension(score: float, reason: str) -> dict:
+    return {"score": max(1, min(10, round(score, 1))), "reason": reason}
+
+
+def _has_cycle(titles: list[str], deps_by_title: dict[str, list[str]]) -> bool:
+    visiting = set()
+    visited = set()
+
+    def visit(title: str) -> bool:
+        if title in visiting:
+            return True
+        if title in visited:
+            return False
+        visiting.add(title)
+        for dep in deps_by_title.get(title, []):
+            if dep in deps_by_title and visit(dep):
+                return True
+        visiting.remove(title)
+        visited.add(title)
+        return False
+
+    return any(visit(title) for title in titles)
+
+
+def build_rule_based_evaluation(user_query: str, tools: dict, plan: dict, difficulty: str) -> dict:
+    """Cheap deterministic rubric-lite evaluation used before LLM judging."""
+    steps = plan.get("steps") if isinstance(plan, dict) else None
+    if not isinstance(steps, list) or not steps:
+        dims = {dim: _make_dimension(1, "规划结构非法或缺少 steps。") for dim in REQUIRED_DIMENSIONS}
+        return {
+            "dimensions": dims,
+            "rubric_criteria": [
+                {"criterion_id": "schema.valid_plan", "score": 0, "severity": "critical", "evidence": "Plan is not a valid non-empty step list."}
+            ],
+            "total_score": compute_weighted_score(dims),
+            "reasoning": "规则预评估发现规划结构非法。",
+            "evaluation_source": "rule",
+        }
+
+    available_tools = set(tools.keys())
+    titles = [step.get("title") for step in steps if isinstance(step.get("title"), str)]
+    title_set = set(titles)
+    deps_by_title = {
+        step.get("title"): step.get("dependencies") or []
+        for step in steps
+        if isinstance(step.get("title"), str)
+    }
+
+    used_tools = [
+        tool
+        for step in steps
+        for tool in (step.get("tools") or [])
+        if isinstance(tool, str)
+    ]
+    missing_tools = [tool for tool in used_tools if tool not in available_tools]
+    dangling_deps = [
+        dep
+        for deps in deps_by_title.values()
+        for dep in deps
+        if dep not in title_set
+    ]
+    has_cycle = _has_cycle(titles, deps_by_title)
+    reference_misses = []
+    for step in steps:
+        content_refs = re.findall(r"【([^】]+)】", step.get("content", ""))
+        deps = set(step.get("dependencies") or [])
+        for ref in content_refs:
+            if ref in title_set and ref not in deps and ref != step.get("title"):
+                reference_misses.append(ref)
+
+    parallel_conflicts = 0
+    group_by_title = {step.get("title"): step.get("parallel_group") for step in steps}
+    for title, deps in deps_by_title.items():
+        group = group_by_title.get(title)
+        if group:
+            parallel_conflicts += sum(1 for dep in deps if group_by_title.get(dep) == group)
+
+    dims = {
+        "tool_existence": _make_dimension(10 - 3 * len(missing_tools), f"不存在工具: {missing_tools}" if missing_tools else "所有工具名存在。"),
+        "tool_semantic_match": _make_dimension(7, "规则预评估不判断深层语义匹配，交由 LLM rubric 判断。"),
+        "dependency_logic": _make_dimension(10 - 3 * len(reference_misses) - 2 * parallel_conflicts, "引用依赖缺失或并行组冲突。" if reference_misses or parallel_conflicts else "未发现确定性依赖错误。"),
+        "no_circular_dep": _make_dimension(1 if has_cycle else 10 - 3 * len(dangling_deps), "存在循环依赖或悬空依赖。" if has_cycle or dangling_deps else "依赖图无环且无悬空引用。"),
+        "data_flow_integrity": _make_dimension(10 - 2 * len(reference_misses), "存在未声明的前序引用。" if reference_misses else "未发现确定性数据流断裂。"),
+        "completeness": _make_dimension(7, "规则预评估不完整判断需求覆盖，交由 LLM rubric 判断。"),
+        "implicit_needs": _make_dimension(7, "规则预评估不完整判断隐性需求，交由 LLM rubric 判断。"),
+        "efficiency": _make_dimension(8 - max(0, len(steps) - 8) * 0.5, "根据步骤数量给出轻量效率估计。"),
+        "thought_depth": _make_dimension(6, "规则预评估不判断推理深度，交由 LLM rubric 判断。"),
+        "thought_consistency": _make_dimension(7, "规则预评估不完整判断 thought 一致性，交由 LLM rubric 判断。"),
+    }
+    criteria = [
+        {
+            "criterion_id": "tool.exists",
+            "score": 0 if missing_tools else 2,
+            "severity": "major" if missing_tools else "none",
+            "evidence": f"Missing tools: {missing_tools}" if missing_tools else "All used tools exist.",
+        },
+        {
+            "criterion_id": "dependency.dag_valid",
+            "score": 0 if has_cycle or dangling_deps else 2,
+            "severity": "critical" if has_cycle else ("major" if dangling_deps else "none"),
+            "evidence": f"dangling={dangling_deps}, cycle={has_cycle}",
+        },
+        {
+            "criterion_id": "dependency.declared_outputs",
+            "score": 0 if reference_misses else 2,
+            "severity": "major" if reference_misses else "none",
+            "evidence": f"References missing dependencies: {reference_misses}" if reference_misses else "Referenced step outputs are declared as dependencies.",
+        },
+    ]
+    return {
+        "dimensions": dims,
+        "rubric_criteria": criteria,
+        "total_score": compute_weighted_score(dims),
+        "reasoning": "规则预评估完成；语义、完整性和安全边界仍建议使用 LLM rubric 抽检。",
+        "evaluation_source": "rule",
+    }
+
+
+def select_llm_judge_indices(plans: list[dict], rule_evaluations: list[dict], difficulty: str) -> set[int]:
+    """Select a cost-aware subset for LLM judging."""
+    if getattr(config, "EVAL_JUDGE_POLICY", "all") == "all":
+        return set(range(len(plans)))
+
+    selected = {idx for idx, plan in enumerate(plans) if not plan.get("negative_type")}
+    negative_budget = get_llm_negative_budget(difficulty)
+    if negative_budget <= 0:
+        return selected
+
+    semantic_priority = {
+        "wrong_tool": 0,
+        "unsafe_compliance": 1,
+        "ignored_ambiguity": 2,
+        "data_flow_broken": 3,
+        "missing_dependency": 4,
+    }
+    negative_indices = [idx for idx, plan in enumerate(plans) if plan.get("negative_type")]
+    negative_indices.sort(
+        key=lambda idx: (
+            semantic_priority.get(plans[idx].get("negative_type"), 99),
+            -rule_evaluations[idx].get("total_score", 0),
+        )
+    )
+    selected.update(negative_indices[:negative_budget])
+    return selected
 
 
 def validate_evaluation(evaluation: dict) -> bool:
@@ -230,6 +536,23 @@ def validate_evaluation(evaluation: dict) -> bool:
     reasoning = evaluation.get("reasoning")
     if not isinstance(reasoning, str):
         return False
+    criteria = evaluation.get("rubric_criteria")
+    if criteria is not None:
+        if not isinstance(criteria, list):
+            return False
+        valid_severities = {"none", "minor", "major", "critical"}
+        for criterion in criteria:
+            if not isinstance(criterion, dict):
+                return False
+            if not isinstance(criterion.get("criterion_id"), str) or not criterion["criterion_id"].strip():
+                return False
+            score = criterion.get("score")
+            if not isinstance(score, (int, float)) or score < 0 or score > 2:
+                return False
+            if criterion.get("severity") not in valid_severities:
+                return False
+            if not isinstance(criterion.get("evidence"), str) or not criterion["evidence"].strip():
+                return False
     return True
 
 
@@ -240,7 +563,11 @@ async def evaluate_plan_once(semaphore, user_query: str, tools: dict,
     messages = [{"role": "user", "content": prompt}]
     try:
         async with semaphore:
-            raw = await call_llm(messages, temperature=config.EVAL_TEMPERATURE)
+            raw = await call_llm(
+                messages,
+                temperature=config.EVAL_TEMPERATURE,
+                profile=getattr(config, "EVAL_MODEL_PROFILE", None),
+            )
         evaluation = parse_json_response(raw)
         if not isinstance(evaluation, dict) or not validate_evaluation(evaluation):
             return None
@@ -257,9 +584,10 @@ async def evaluate_plan(semaphore, user_query: str, tools: dict,
                         plan: dict, difficulty: str) -> dict | None:
     """评估单个规划方案，多次并发采样取中位数。"""
     # 并发执行 N 次评分
+    eval_sample_n = get_eval_sample_n(difficulty)
     tasks = [
         evaluate_plan_once(semaphore, user_query, tools, plan, difficulty)
-        for _ in range(config.EVAL_SAMPLE_N)
+        for _ in range(eval_sample_n)
     ]
     results = await asyncio.gather(*tasks)
     evaluations = [ev for ev in results if ev is not None]
@@ -288,6 +616,9 @@ async def evaluate_plan(semaphore, user_query: str, tools: dict,
     merged["total_score"] = compute_weighted_score(merged["dimensions"])
     all_reasonings = [ev.get("reasoning", "") for ev in evaluations]
     merged["reasoning"] = max(all_reasonings, key=len)
+    criteria_candidates = [ev.get("rubric_criteria", []) for ev in evaluations]
+    if any(criteria_candidates):
+        merged["rubric_criteria"] = max(criteria_candidates, key=len)
 
     return {"plan": plan, "evaluation": merged}
 
@@ -332,11 +663,26 @@ async def evaluate_all_plans(semaphore, question_data: dict, writer: StreamWrite
     plans = question_data.get("plans", [])
     difficulty = question_data.get("difficulty", "simple")
     scenario = question_data.get("scenario", "?")
+    rule_evaluations = [
+        build_rule_based_evaluation(user_query, tools, plan, difficulty)
+        for plan in plans
+    ]
+    llm_indices = select_llm_judge_indices(plans, rule_evaluations, difficulty)
 
     # 并发评估所有计划
     async def _eval_one(i, plan):
+        if i not in llm_indices:
+            result = {"plan": plan, "evaluation": rule_evaluations[i]}
+            status = "RULE"
+            print(f"  [{scenario[:8]}][{difficulty}] Eval {i + 1}/{len(plans)} — {status}")
+            return result
         result = await evaluate_plan(semaphore, user_query, tools, plan, difficulty)
-        status = "OK" if result else "FAIL"
+        if result is None:
+            result = {"plan": plan, "evaluation": rule_evaluations[i]}
+            status = "RULE_FALLBACK"
+        else:
+            result["evaluation"].setdefault("evaluation_source", "llm")
+            status = "OK"
         print(f"  [{scenario[:8]}][{difficulty}] Eval {i + 1}/{len(plans)} — {status}")
         return result
 
@@ -372,13 +718,45 @@ async def main():
         print("[ERROR] 采样文件为空，终止执行")
         return
 
+    resume = getattr(config, "RESUME", False)
+    if resume:
+        existing_keys = load_existing_evaluation_keys(config.EVALUATED_PLANS_FILE)
+        if existing_keys:
+            before = len(plan_samples)
+            plan_samples = [qd for qd in plan_samples if question_key(qd) not in existing_keys]
+            print(
+                f"[INFO] resume=true，已跳过 {before - len(plan_samples)} 条已有评分记录，"
+                f"剩余 {len(plan_samples)} 条待评分"
+            )
+    if not plan_samples:
+        print("[INFO] 没有新的规划需要评分")
+        return
+
     n_evals = sum(len(q.get("plans", [])) for q in plan_samples)
+    n_llm_evals = 0
+    for qd in plan_samples:
+        difficulty = qd.get("difficulty", "")
+        plans = qd.get("plans", [])
+        rule_evaluations = [
+            build_rule_based_evaluation(
+                qd.get("query", ""),
+                qd.get("tools", {}),
+                plan,
+                difficulty,
+            )
+            for plan in plans
+        ]
+        selected_indices = select_llm_judge_indices(plans, rule_evaluations, difficulty)
+        n_llm_evals += sum(get_eval_sample_n(difficulty) for _ in selected_indices)
     print(f"[INFO] 已加载 {len(plan_samples)} 条问题的采样数据")
-    print(f"[INFO] 共 {n_evals} 个计划，每个评分 {config.EVAL_SAMPLE_N} 次")
-    print(f"[INFO] 预计 {n_evals * config.EVAL_SAMPLE_N} 次 LLM 调用，并发数 {config.MAX_CONCURRENCY}")
+    print(f"[INFO] 共 {n_evals} 个计划，judge policy={getattr(config, 'EVAL_JUDGE_POLICY', 'all')}")
+    print(f"[INFO] 预计 {n_llm_evals} 次 LLM Judge 调用，并发数 {config.MAX_CONCURRENCY}")
 
     semaphore = asyncio.Semaphore(config.MAX_CONCURRENCY)
-    open(config.EVALUATED_PLANS_FILE, "w").close()
+    if not resume:
+        open(config.EVALUATED_PLANS_FILE, "w").close()
+    else:
+        ensure_trailing_newline(config.EVALUATED_PLANS_FILE)
     writer = StreamWriter(config.EVALUATED_PLANS_FILE)
 
     # 所有问题并发评分

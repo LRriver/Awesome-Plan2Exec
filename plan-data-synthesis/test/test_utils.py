@@ -10,7 +10,7 @@ import pytest
 # Ensure the parent module directory is on sys.path for direct imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils import call_llm, parse_json_response
+from utils import call_llm, ensure_trailing_newline, parse_json_response
 
 
 # ──────────────────────────────────────────────
@@ -58,6 +58,38 @@ class TestParseJsonResponse:
     def test_markdown_block_with_surrounding_text(self):
         content = 'Some explanation\n```json\n[1,2,3]\n```\nMore text'
         assert parse_json_response(content) == [1, 2, 3]
+
+    def test_control_character_inside_json_string_is_sanitized(self):
+        content = '{"query": "compare S&P 500\nand Nasdaq"}'
+        assert parse_json_response(content) == {"query": "compare S&P 500 and Nasdaq"}
+
+
+class TestEnsureTrailingNewline:
+    def test_noops_for_missing_or_empty_file(self, tmp_path):
+        missing = tmp_path / "missing.jsonl"
+        ensure_trailing_newline(missing)
+        assert not missing.exists()
+
+        empty = tmp_path / "empty.jsonl"
+        empty.write_bytes(b"")
+        ensure_trailing_newline(empty)
+        assert empty.read_bytes() == b""
+
+    def test_adds_newline_when_last_line_is_incomplete(self, tmp_path):
+        path = tmp_path / "data.jsonl"
+        path.write_bytes(b'{"a": 1}')
+
+        ensure_trailing_newline(path)
+
+        assert path.read_bytes() == b'{"a": 1}\n'
+
+    def test_keeps_existing_newline(self, tmp_path):
+        path = tmp_path / "data.jsonl"
+        path.write_bytes(b'{"a": 1}\n')
+
+        ensure_trailing_newline(path)
+
+        assert path.read_bytes() == b'{"a": 1}\n'
 
 
 # ──────────────────────────────────────────────
@@ -122,6 +154,77 @@ class TestCallLlm:
         assert call_kwargs["temperature"] == 0.8
         assert call_kwargs["top_p"] == 0.9
         assert call_kwargs["extra_body"] == {"reasoning_split": True}
+
+    @pytest.mark.asyncio
+    async def test_call_llm_accepts_model_override(self):
+        """call_llm can route a single request to an explicit model."""
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content="resp"))]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=resp)
+
+        with patch("utils._get_openai_client", return_value=mock_client):
+            await call_llm(
+                [{"role": "user", "content": "test"}],
+                model="DeepSeek-V4-Flash",
+            )
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["model"] == "DeepSeek-V4-Flash"
+
+    def test_resolve_model_uses_named_profile(self):
+        """Named model profiles keep stage routing out of call sites."""
+        from utils import resolve_model
+
+        with patch("utils.config.LLM_PROFILES", {"cheap": {"model": "DeepSeek-V4-Flash"}}):
+            assert resolve_model(profile="cheap") == "DeepSeek-V4-Flash"
+
+    def test_resolve_profile_max_concurrency_uses_named_profile(self):
+        """Named profiles can set their own rate limits."""
+        from utils import resolve_profile_max_concurrency
+
+        with patch("utils.config.LLM_PROFILES", {"strong": {"max_concurrency": 7}}):
+            assert resolve_profile_max_concurrency(profile="strong") == 7
+
+    @pytest.mark.asyncio
+    async def test_call_llm_enforces_profile_concurrency(self):
+        """Profile max_concurrency limits concurrent requests to a model."""
+        from utils import _PROFILE_SEMAPHORES
+
+        _PROFILE_SEMAPHORES.clear()
+        active = 0
+        max_active = 0
+
+        async def fake_create(**_kwargs):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            resp = MagicMock()
+            resp.choices = [MagicMock(message=MagicMock(content="ok"))]
+            return resp
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = fake_create
+
+        profiles = {
+            "strong": {
+                "model": "gpt-5.4",
+                "base_url": "http://example.test",
+                "api_key": "key",
+                "max_concurrency": 1,
+            }
+        }
+        with patch("utils.config.LLM_PROFILES", profiles):
+            with patch("utils._get_openai_client", return_value=mock_client):
+                await asyncio.gather(
+                    call_llm([{"role": "user", "content": "a"}], profile="strong"),
+                    call_llm([{"role": "user", "content": "b"}], profile="strong"),
+                )
+
+        assert max_active == 1
 
     @pytest.mark.asyncio
     async def test_disable_reasoning_split(self):

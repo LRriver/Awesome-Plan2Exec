@@ -12,7 +12,16 @@ from hypothesis import strategies as st
 # Ensure the parent module directory is on sys.path for direct imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from generate_questions import SELECTED_SCENARIOS, FAST_SCENARIOS, FEW_SCENARIOS, ALL_SCENARIOS, build_question_prompt, load_scenarios
+from generate_questions import (
+    SELECTED_SCENARIOS,
+    FAST_SCENARIOS,
+    FEW_SCENARIOS,
+    ALL_SCENARIOS,
+    build_question_prompt,
+    load_existing_question_scenarios,
+    load_scenarios,
+    should_keep_question,
+)
 
 
 # ──────────────────────────────────────────────
@@ -139,6 +148,45 @@ class TestBuildQuestionPromptUnit:
         assert "adversarial" in prompt
         assert "safety" in prompt
         assert "long_chain" in prompt
+
+    def test_prompt_requests_style_metadata_without_new_difficulty(self):
+        prompt = build_question_prompt("场景", {"t": "d"})
+        assert "query_style" in prompt
+        assert "difficulty_subtype" in prompt
+        assert "不要把 query_style 当作 difficulty" in prompt
+        assert '"difficulty": "simple"' in prompt
+        assert '"query_style": "casual"' in prompt
+
+
+class TestDifficultyRetention:
+    def test_full_rate_keeps_question(self):
+        with patch("generate_questions.config.DIFFICULTY_KEEP_RATES", {"chat": 1.0}, create=True):
+            assert should_keep_question("任意场景", "chat") is True
+
+    def test_zero_rate_drops_question(self):
+        with patch("generate_questions.config.DIFFICULTY_KEEP_RATES", {"chat": 0.0}, create=True):
+            assert should_keep_question("任意场景", "chat") is False
+
+    def test_retention_is_deterministic(self):
+        with patch("generate_questions.config.DIFFICULTY_KEEP_RATES", {"simple": 0.5}, create=True):
+            first = should_keep_question("股票历史价格查询", "simple")
+            second = should_keep_question("股票历史价格查询", "simple")
+        assert first is second
+
+
+class TestResumeHelpers:
+    def test_load_existing_question_scenarios_skips_bad_lines(self, tmp_path):
+        path = tmp_path / "questions.jsonl"
+        path.write_text(
+            "\n".join([
+                json.dumps({"scenario": "场景A", "difficulty": "simple", "query": "q1"}, ensure_ascii=False),
+                "{bad json",
+                json.dumps({"scenario": "场景B", "difficulty": "parallel", "query": "q2"}, ensure_ascii=False),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        assert load_existing_question_scenarios(path) == {"场景A", "场景B"}
 
 
 # ──────────────────────────────────────────────

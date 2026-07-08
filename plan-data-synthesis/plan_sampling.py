@@ -5,11 +5,12 @@ Plan2Exec 数据合成流水线 — 第二阶段：规划采样器
 并发模式：所有问题的所有采样任务同时进入并发池，完成一个保存一个。
 """
 import asyncio
+import copy
 import json
 import sys
 
 import config
-from utils import call_llm, parse_json_response
+from utils import call_llm, ensure_trailing_newline, parse_json_response
 
 
 def _build_difficulty_guidance(difficulty: str) -> str:
@@ -245,6 +246,80 @@ def build_system_prompt(tools: dict, difficulty: str = "simple") -> str:
   ]
 }}"""
 
+NEGATIVE_TYPE_GUIDANCE = {
+    "wrong_tool": "故意选择语义不匹配但看似相关的工具，制造工具选择错误；JSON 结构仍需合法。",
+    "missing_dependency": "故意遗漏关键 dependencies，让后续步骤使用前序结果但不声明依赖；JSON 结构仍需合法。",
+    "over_serialized": "故意把明显可以并行的子任务串行化，制造低效率依赖结构；JSON 结构仍需合法。",
+    "unsafe_compliance": "针对安全类请求，错误地执行有害请求而不是拒绝；JSON 结构仍需合法。",
+    "ignored_ambiguity": "针对模糊问题，故意忽略歧义并盲目执行；JSON 结构仍需合法。",
+    "fake_tool": "故意混入 1 个不存在于工具集的工具名，制造工具存在性错误；JSON 结构仍需合法。",
+    "redundant_steps": "故意加入冗余步骤或过细粒度拆解，制造效率较差但可解析的计划；JSON 结构仍需合法。",
+    "data_flow_broken": "故意让后续步骤使用前序步骤无法产出的数据，制造数据流断裂；JSON 结构仍需合法。",
+}
+
+
+def get_plan_sample_k(difficulty: str) -> int:
+    """Return difficulty-aware positive sampling count."""
+    overrides = getattr(config, "PLAN_SAMPLE_K_BY_DIFFICULTY", {})
+    return int(overrides.get(difficulty, config.PLAN_SAMPLE_K))
+
+
+def get_negative_plan_types(difficulty: str) -> list[str]:
+    """Return difficulty-aware controlled negative types."""
+    overrides = getattr(config, "NEGATIVE_PLAN_TYPES_BY_DIFFICULTY", {})
+    if difficulty in overrides:
+        return list(overrides[difficulty])
+    return list(getattr(config, "NEGATIVE_PLAN_TYPES", []) or [])
+
+
+def question_key(record: dict) -> tuple[str, str, str]:
+    """Stable identity for one generated question across resume runs."""
+    return (
+        record.get("scenario", ""),
+        record.get("difficulty", ""),
+        record.get("query", ""),
+    )
+
+
+def load_existing_sample_keys(path) -> set[tuple[str, str, str]]:
+    """Return question keys already present in plan_samples.jsonl."""
+    keys = set()
+    if not path.exists():
+        return keys
+    with open(path, "r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"[WARN] 跳过无法解析的已有规划采样记录 {path}:{line_no}")
+                continue
+            keys.add(question_key(record))
+    return keys
+
+
+def build_negative_system_prompt(tools: dict, difficulty: str, negative_type: str) -> str:
+    """构建受控负样本 prompt，用于拉开 chosen/rejected 分布。"""
+    base_prompt = build_system_prompt(tools, difficulty)
+    guidance = NEGATIVE_TYPE_GUIDANCE.get(
+        negative_type,
+        "故意生成一个质量较差但 JSON 结构合法的规划。",
+    )
+    return f"""{base_prompt}
+
+【受控负样本要求】
+你现在不是生成最佳规划，而是在生成一个用于训练偏好模型的受控负样本。
+negative_type: {negative_type}
+错误注入方式：{guidance}
+
+必须遵守：
+- 输出仍然必须是合法 JSON，字段结构与正常规划完全一致。
+- 不要在 JSON 外解释你注入了什么错误。
+- 错误应足够明显，便于评分器和偏好训练区分，但不要破坏 JSON 可解析性。
+- 若 negative_type 与当前 difficulty 不完全匹配，也要按 negative_type 注入最接近的错误。"""
+
 
 def validate_plan_output(plan: dict) -> bool:
     """校验 Plan_Output 结构是否合法。"""
@@ -276,29 +351,45 @@ def validate_plan_output(plan: dict) -> bool:
     return True
 
 
-async def sample_plan(semaphore, system_prompt: str, user_query: str) -> dict | None:
+async def sample_plan(
+    semaphore,
+    system_prompt: str,
+    user_query: str,
+    *,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    profile: str | None = None,
+) -> dict | None:
     """对单个问题进行一次规划采样。"""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_query},
     ]
-    try:
-        async with semaphore:
-            raw = await call_llm(
-                messages,
-                temperature=config.PLAN_TEMPERATURE,
-                top_p=config.PLAN_TOP_P,
-            )
-        plan = parse_json_response(raw)
-        if not isinstance(plan, dict) or not validate_plan_output(plan):
-            print(f"[WARN] Plan validation failed for query: {user_query[:50]}...")
+    parse_retries = getattr(config, "JSON_PARSE_RETRIES", 0)
+    for attempt in range(parse_retries + 1):
+        try:
+            async with semaphore:
+                raw = await call_llm(
+                    messages,
+                    temperature=config.PLAN_TEMPERATURE if temperature is None else temperature,
+                    top_p=config.PLAN_TOP_P if top_p is None else top_p,
+                    profile=profile,
+                )
+            plan = parse_json_response(raw)
+            if not isinstance(plan, dict) or not validate_plan_output(plan):
+                print(f"[WARN] Plan validation failed for query: {user_query[:50]}...")
+                if attempt < parse_retries:
+                    continue
+                return None
+            return plan
+        except Exception as e:
+            if attempt < parse_retries:
+                print(f"[WARN] sample_plan parse/validation failed (attempt {attempt + 1}): {e}")
+                continue
+            print(f"[WARN] sample_plan failed: {e}")
             return None
-        return plan
-    except Exception as e:
-        print(f"[WARN] sample_plan failed: {e}")
-        return None
-    finally:
-        await asyncio.sleep(config.REQUEST_DELAY)
+        finally:
+            await asyncio.sleep(config.REQUEST_DELAY)
 
 
 class StreamWriter:
@@ -346,13 +437,43 @@ async def sample_plans_for_question(semaphore, question_data: dict, writer: Stre
     scenario = question_data["scenario"]
 
     async def _one_sample(idx):
-        result = await sample_plan(semaphore, system_prompt, user_query)
+        result = await sample_plan(
+            semaphore,
+            system_prompt,
+            user_query,
+            profile=getattr(config, "PLAN_MODEL_PROFILE", None),
+        )
+        if result:
+            result = copy.deepcopy(result)
+            result.setdefault("quality_bucket", "candidate")
+            result.setdefault("negative_type", None)
         status = "OK" if result else "FAIL"
-        print(f"  [{scenario[:8]}][{difficulty}] Sample {idx + 1}/{config.PLAN_SAMPLE_K} — {status}")
+        print(f"  [{scenario[:8]}][{difficulty}] Sample {idx + 1}/{plan_sample_k} — {status}")
+        return result
+
+    async def _one_negative(negative_type):
+        negative_prompt = build_negative_system_prompt(question_data["tools"], difficulty, negative_type)
+        result = await sample_plan(
+            semaphore,
+            negative_prompt,
+            user_query,
+            temperature=getattr(config, "NEGATIVE_PLAN_TEMPERATURE", config.PLAN_TEMPERATURE),
+            top_p=getattr(config, "NEGATIVE_PLAN_TOP_P", config.PLAN_TOP_P),
+            profile=getattr(config, "NEGATIVE_PLAN_MODEL_PROFILE", None),
+        )
+        if result:
+            result = copy.deepcopy(result)
+            result["negative_type"] = negative_type
+            result["quality_bucket"] = "weak"
+        status = "OK" if result else "FAIL"
+        print(f"  [{scenario[:8]}][{difficulty}] Negative {negative_type} — {status}")
         return result
 
     # 并发执行所有 K 次采样
-    tasks = [_one_sample(i) for i in range(config.PLAN_SAMPLE_K)]
+    plan_sample_k = get_plan_sample_k(difficulty)
+    tasks = [_one_sample(i) for i in range(plan_sample_k)]
+    negative_types = get_negative_plan_types(difficulty)
+    tasks.extend(_one_negative(negative_type) for negative_type in negative_types)
     results = await asyncio.gather(*tasks)
     plans = [r for r in results if r is not None]
 
@@ -364,7 +485,8 @@ async def sample_plans_for_question(semaphore, question_data: dict, writer: Stre
         "plans": plans,
     }
     await writer.append(record)
-    print(f"  [{scenario[:8]}][{difficulty}] 有效规划: {len(plans)}/{config.PLAN_SAMPLE_K}")
+    expected = plan_sample_k + len(negative_types)
+    print(f"  [{scenario[:8]}][{difficulty}] 有效规划: {len(plans)}/{expected}")
     return record
 
 
@@ -385,12 +507,34 @@ async def main():
         print("[ERROR] 问题文件为空，终止执行")
         return
 
-    print(f"[INFO] 已加载 {len(questions)} 条问题，每条采样 {config.PLAN_SAMPLE_K} 次")
-    print(f"[INFO] 预计 {len(questions) * config.PLAN_SAMPLE_K} 次 LLM 调用，并发数 {config.MAX_CONCURRENCY}")
+    resume = getattr(config, "RESUME", False)
+    if resume:
+        existing_keys = load_existing_sample_keys(config.PLAN_SAMPLES_FILE)
+        if existing_keys:
+            before = len(questions)
+            questions = [q for q in questions if question_key(q) not in existing_keys]
+            print(
+                f"[INFO] resume=true，已跳过 {before - len(questions)} 条已有问题采样，"
+                f"剩余 {len(questions)} 条待采样"
+            )
+    if not questions:
+        print("[INFO] 没有新的问题需要规划采样")
+        return
+
+    expected_calls = 0
+    for q in questions:
+        difficulty = q.get("difficulty", "")
+        expected_calls += get_plan_sample_k(difficulty)
+        expected_calls += len(get_negative_plan_types(difficulty))
+    print(f"[INFO] 已加载 {len(questions)} 条问题")
+    print(f"[INFO] 预计 {expected_calls} 次 LLM 调用，并发数 {config.MAX_CONCURRENCY}")
 
     semaphore = asyncio.Semaphore(config.MAX_CONCURRENCY)
-    # 清空输出文件
-    open(config.PLAN_SAMPLES_FILE, "w").close()
+    if not resume:
+        # 清空输出文件
+        open(config.PLAN_SAMPLES_FILE, "w").close()
+    else:
+        ensure_trailing_newline(config.PLAN_SAMPLES_FILE)
     writer = StreamWriter(config.PLAN_SAMPLES_FILE)
 
     # 所有问题并发执行

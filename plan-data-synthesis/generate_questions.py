@@ -14,11 +14,12 @@ Plan2Exec 数据合成流水线 — 第一阶段：问题生成器
 
 """
 import asyncio
+import hashlib
 import json
 import sys
 
 import config
-from utils import call_llm, parse_json_response
+from utils import call_llm, ensure_trailing_newline, parse_json_response
 
 
 # ============ 场景选取模式 ============
@@ -105,8 +106,12 @@ def load_scenarios() -> list[dict]:
 def build_question_prompt(scenario: str, tools: dict) -> str:
     """构建问题生成 Prompt，生成 8 种难度的用户问题。"""
     tools_description_json = json.dumps(tools, ensure_ascii=False, indent=2)
-    tool_names = list(tools.keys())
-    tool_names_str = ", ".join(tool_names[:8]) + ("..." if len(tool_names) > 8 else "")
+    query_styles = getattr(
+        config,
+        "QUERY_STYLES",
+        ["realistic", "casual", "noisy", "humorous", "formal"],
+    )
+    query_styles_json = json.dumps(query_styles, ensure_ascii=False)
 
     return f"""你是一个高级用户行为模拟器，擅长生成各种复杂度和边界情况的用户提问。
 现在有一个特定场景：【{scenario}】
@@ -161,18 +166,56 @@ def build_question_prompt(scenario: str, tools: dict) -> str:
 - 高难度问题（long_chain/ambiguous/adversarial/safety）是重点，要精心设计
 - 每个问题独立，不要互相引用
 - 问题中应包含具体的实体信息（如名称、编号、日期等）
+- 每个问题需要额外给出 query_style 和 difficulty_subtype 两个元数据字段
+- query_style 只能从 {query_styles_json} 中选择；humorous 表示表达可以有生活化幽默，但任务本身必须仍然清楚有效
+- difficulty_subtype 用一句短标签说明该 difficulty 内部的具体类型，例如 ambiguous 可用 missing_parameter / vague_reference / unclear_metric；adversarial 可用 unrelated_mix / false_premise / contradiction / tool_lure
+- 不要把 query_style 当作 difficulty；difficulty 必须仍然严格属于下面 8 类之一
 
 输出格式为纯 JSON 数组：
 [
-  {{"difficulty": "chat", "query": "..."}},
-  {{"difficulty": "simple", "query": "..."}},
-  {{"difficulty": "parallel", "query": "..."}},
-  {{"difficulty": "complex_dependency", "query": "..."}},
-  {{"difficulty": "long_chain", "query": "..."}},
-  {{"difficulty": "ambiguous", "query": "..."}},
-  {{"difficulty": "adversarial", "query": "..."}},
-  {{"difficulty": "safety", "query": "..."}}
+  {{"difficulty": "chat", "query_style": "casual", "difficulty_subtype": "scene_knowledge", "query": "..."}},
+  {{"difficulty": "simple", "query_style": "casual", "difficulty_subtype": "single_tool_lookup", "query": "..."}},
+  {{"difficulty": "parallel", "query_style": "realistic", "difficulty_subtype": "independent_subtasks", "query": "..."}},
+  {{"difficulty": "complex_dependency", "query_style": "formal", "difficulty_subtype": "serial_data_dependency", "query": "..."}},
+  {{"difficulty": "long_chain", "query_style": "realistic", "difficulty_subtype": "mixed_parallel_serial", "query": "..."}},
+  {{"difficulty": "ambiguous", "query_style": "noisy", "difficulty_subtype": "missing_parameter", "query": "..."}},
+  {{"difficulty": "adversarial", "query_style": "humorous", "difficulty_subtype": "unrelated_mix", "query": "..."}},
+  {{"difficulty": "safety", "query_style": "formal", "difficulty_subtype": "harmful_tool_use", "query": "..."}}
 ]"""
+
+
+def should_keep_question(scenario: str, difficulty: str) -> bool:
+    """Deterministically keep/drop lower-priority difficulties by configured rate."""
+    rates = getattr(config, "DIFFICULTY_KEEP_RATES", {})
+    rate = rates.get(difficulty, 1.0)
+    if rate >= 1:
+        return True
+    if rate <= 0:
+        return False
+    key = f"{scenario}|{difficulty}".encode("utf-8")
+    bucket = int(hashlib.md5(key).hexdigest()[:8], 16) / 0xFFFFFFFF
+    return bucket < rate
+
+
+def load_existing_question_scenarios(path) -> set[str]:
+    """Return scenarios already written to questions.jsonl for resume mode."""
+    scenarios = set()
+    if not path.exists():
+        return scenarios
+    with open(path, "r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"[WARN] 跳过无法解析的已有问题记录 {path}:{line_no}")
+                continue
+            scenario = record.get("scenario")
+            if isinstance(scenario, str) and scenario:
+                scenarios.add(scenario)
+    return scenarios
 
 
 async def generate_questions_for_scenario(
@@ -185,21 +228,36 @@ async def generate_questions_for_scenario(
     prompt = build_question_prompt(scenario, tools)
 
     messages = [{"role": "user", "content": prompt}]
+    parse_retries = getattr(config, "JSON_PARSE_RETRIES", 0)
+    raw = ""
+    questions = None
 
-    async with semaphore:
+    for attempt in range(parse_retries + 1):
+        async with semaphore:
+            try:
+                raw = await call_llm(
+                    messages,
+                    profile=getattr(config, "QUESTION_MODEL_PROFILE", None),
+                )
+            except Exception as e:
+                print(f"[ERROR] 场景 '{scenario}' LLM 调用失败: {e}")
+                return []
+
+            await asyncio.sleep(config.REQUEST_DELAY)
+
         try:
-            raw = await call_llm(messages)
+            questions = parse_json_response(raw)
+            break
         except Exception as e:
-            print(f"[ERROR] 场景 '{scenario}' LLM 调用失败: {e}")
+            if attempt < parse_retries:
+                print(f"[WARN] 场景 '{scenario}' JSON 解析失败，重试 {attempt + 1}/{parse_retries}: {e}")
+                continue
+            print(f"[ERROR] 场景 '{scenario}' JSON 解析失败: {e}")
+            print(f"[DEBUG] 原始响应: {raw[:500]}")
             return []
 
-        await asyncio.sleep(config.REQUEST_DELAY)
-
-    try:
-        questions = parse_json_response(raw)
-    except Exception as e:
-        print(f"[ERROR] 场景 '{scenario}' JSON 解析失败: {e}")
-        print(f"[DEBUG] 原始响应: {raw[:500]}")
+    if not isinstance(questions, list):
+        print(f"[ERROR] 场景 '{scenario}' 响应不是 JSON 数组，跳过")
         return []
 
     # 校验难度类型
@@ -210,10 +268,14 @@ async def generate_questions_for_scenario(
         if diff not in valid_difficulties:
             print(f"[WARN] 场景 '{scenario}' 未知难度类型: {diff}，跳过")
             continue
+        if not should_keep_question(scenario, diff):
+            continue
         results.append({
             "scenario": scenario,
             "tools": tools,
             "difficulty": diff,
+            "query_style": q.get("query_style", "realistic"),
+            "difficulty_subtype": q.get("difficulty_subtype", "unspecified"),
             "query": q["query"],
         })
 
@@ -228,13 +290,31 @@ async def main():
         print("[ERROR] 没有加载到任何场景，终止执行")
         return
 
+    resume = getattr(config, "RESUME", False)
+    existing_scenarios = set()
+    if resume:
+        existing_scenarios = load_existing_question_scenarios(config.QUESTIONS_FILE)
+        if existing_scenarios:
+            before = len(scenarios)
+            scenarios = [s for s in scenarios if s.get("scenario") not in existing_scenarios]
+            print(
+                f"[INFO] resume=true，已跳过 {before - len(scenarios)} 个已有场景，"
+                f"剩余 {len(scenarios)} 个场景待生成"
+            )
+    if not scenarios:
+        print("[INFO] 没有新的场景需要生成问题")
+        return
+
     semaphore = asyncio.Semaphore(config.MAX_CONCURRENCY)
     all_questions = []
     buffer = []
     lock = asyncio.Lock()
 
-    # 清空输出文件
-    open(config.QUESTIONS_FILE, "w").close()
+    if not resume:
+        # 清空输出文件
+        open(config.QUESTIONS_FILE, "w").close()
+    else:
+        ensure_trailing_newline(config.QUESTIONS_FILE)
 
     async def flush_buffer():
         if not buffer:
@@ -261,7 +341,7 @@ async def main():
     # 统计各难度分布
     from collections import Counter
     dist = Counter(q["difficulty"] for q in all_questions)
-    print(f"\n[INFO] 共生成 {len(all_questions)} 条问题，已写入 {config.QUESTIONS_FILE}")
+    print(f"\n[INFO] 本次生成 {len(all_questions)} 条问题，已写入 {config.QUESTIONS_FILE}")
     print(f"[INFO] 难度分布: {dict(dist)}")
 
 

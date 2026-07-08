@@ -16,6 +16,11 @@ from hypothesis import strategies as st
 
 from plan_sampling import (
     build_system_prompt,
+    build_negative_system_prompt,
+    get_plan_sample_k,
+    get_negative_plan_types,
+    load_existing_sample_keys,
+    question_key,
     validate_plan_output,
     sample_plan,
     sample_plans_for_question,
@@ -106,6 +111,12 @@ class TestValidatePlanOutput:
         plan["steps"] = ["not a dict"]
         assert validate_plan_output(plan) is False
 
+    def test_negative_mode_metadata_is_allowed(self):
+        plan = self._make_valid_plan()
+        plan["negative_type"] = "wrong_tool"
+        plan["quality_bucket"] = "weak"
+        assert validate_plan_output(plan) is True
+
 
 # ── sample_plan ───────────────────────────────────────────────────
 
@@ -121,38 +132,66 @@ class TestSamplePlan:
 
     @pytest.mark.asyncio
     async def test_returns_valid_plan(self):
-        session = MagicMock()
         semaphore = asyncio.Semaphore(5)
         with patch("plan_sampling.call_llm", new_callable=AsyncMock, return_value=self._valid_plan_json()):
-            result = await sample_plan(session, semaphore, "sys", "query")
+            result = await sample_plan(semaphore, "sys", "query")
         assert result is not None
         assert result["fixed_question"] == "q"
 
     @pytest.mark.asyncio
     async def test_returns_none_on_invalid_structure(self):
-        session = MagicMock()
         semaphore = asyncio.Semaphore(5)
         bad_json = json.dumps({"missing": "fields"})
         with patch("plan_sampling.call_llm", new_callable=AsyncMock, return_value=bad_json):
-            result = await sample_plan(session, semaphore, "sys", "query")
+            result = await sample_plan(semaphore, "sys", "query")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_returns_none_on_exception(self):
-        session = MagicMock()
         semaphore = asyncio.Semaphore(5)
         with patch("plan_sampling.call_llm", new_callable=AsyncMock, side_effect=Exception("boom")):
-            result = await sample_plan(session, semaphore, "sys", "query")
+            result = await sample_plan(semaphore, "sys", "query")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_handles_markdown_wrapped_json(self):
-        session = MagicMock()
         semaphore = asyncio.Semaphore(5)
         wrapped = "```json\n" + self._valid_plan_json() + "\n```"
         with patch("plan_sampling.call_llm", new_callable=AsyncMock, return_value=wrapped):
-            result = await sample_plan(session, semaphore, "sys", "query")
+            result = await sample_plan(semaphore, "sys", "query")
         assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_retries_once_after_json_parse_failure(self):
+        semaphore = asyncio.Semaphore(5)
+        bad_json = '{"fixed_question": "q"'
+        with patch("plan_sampling.call_llm", new_callable=AsyncMock, side_effect=[bad_json, self._valid_plan_json()]) as mock_call:
+            with patch("plan_sampling.config.JSON_PARSE_RETRIES", 1, create=True):
+                result = await sample_plan(semaphore, "sys", "query")
+        assert result is not None
+        assert mock_call.await_count == 2
+
+
+class TestResumeHelpers:
+    def test_question_key_uses_scenario_difficulty_query(self):
+        record = {"scenario": "s", "difficulty": "simple", "query": "q", "tools": {"t": "d"}}
+        assert question_key(record) == ("s", "simple", "q")
+
+    def test_load_existing_sample_keys_skips_bad_lines(self, tmp_path):
+        path = tmp_path / "plan_samples.jsonl"
+        path.write_text(
+            "\n".join([
+                json.dumps({"scenario": "s1", "difficulty": "simple", "query": "q1", "plans": []}),
+                "{bad json",
+                json.dumps({"scenario": "s2", "difficulty": "parallel", "query": "q2", "plans": []}),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        assert load_existing_sample_keys(path) == {
+            ("s1", "simple", "q1"),
+            ("s2", "parallel", "q2"),
+        }
 
 
 # ── sample_plans_for_question ─────────────────────────────────────
@@ -177,46 +216,101 @@ class TestSamplePlansForQuestion:
 
     @pytest.mark.asyncio
     async def test_collects_all_successful_samples(self):
-        session = MagicMock()
         semaphore = asyncio.Semaphore(5)
         mock_writer = AsyncMock()
         with patch("plan_sampling.sample_plan", new_callable=AsyncMock, return_value=self._valid_plan()):
             with patch("plan_sampling.config") as mock_config:
                 mock_config.PLAN_SAMPLE_K = 5
+                mock_config.PLAN_SAMPLE_K_BY_DIFFICULTY = {}
+                mock_config.NEGATIVE_PLAN_TYPES = []
+                mock_config.NEGATIVE_PLAN_TYPES_BY_DIFFICULTY = {}
                 mock_config.REQUEST_DELAY = 0
                 mock_config.FLUSH_THRESHOLD = 10
-                result = await sample_plans_for_question(session, semaphore, self._question_data(), mock_writer)
+                result = await sample_plans_for_question(semaphore, self._question_data(), mock_writer)
         assert result["scenario"] == "test_scenario"
         assert result["difficulty"] == "simple"
         assert len(result["plans"]) == 5
 
     @pytest.mark.asyncio
     async def test_filters_out_none_results(self):
-        session = MagicMock()
         semaphore = asyncio.Semaphore(5)
         mock_writer = AsyncMock()
         side_effects = [self._valid_plan(), None, self._valid_plan(), None, None]
         with patch("plan_sampling.sample_plan", new_callable=AsyncMock, side_effect=side_effects):
             with patch("plan_sampling.config") as mock_config:
                 mock_config.PLAN_SAMPLE_K = 5
+                mock_config.PLAN_SAMPLE_K_BY_DIFFICULTY = {}
+                mock_config.NEGATIVE_PLAN_TYPES = []
+                mock_config.NEGATIVE_PLAN_TYPES_BY_DIFFICULTY = {}
                 mock_config.REQUEST_DELAY = 0
                 mock_config.FLUSH_THRESHOLD = 10
-                result = await sample_plans_for_question(session, semaphore, self._question_data(), mock_writer)
+                result = await sample_plans_for_question(semaphore, self._question_data(), mock_writer)
         assert len(result["plans"]) == 2
 
     @pytest.mark.asyncio
     async def test_all_fail_returns_empty_plans(self):
-        session = MagicMock()
         semaphore = asyncio.Semaphore(5)
         mock_writer = AsyncMock()
         with patch("plan_sampling.sample_plan", new_callable=AsyncMock, return_value=None):
             with patch("plan_sampling.config") as mock_config:
                 mock_config.PLAN_SAMPLE_K = 5
+                mock_config.PLAN_SAMPLE_K_BY_DIFFICULTY = {}
+                mock_config.NEGATIVE_PLAN_TYPES = []
+                mock_config.NEGATIVE_PLAN_TYPES_BY_DIFFICULTY = {}
                 mock_config.REQUEST_DELAY = 0
                 mock_config.FLUSH_THRESHOLD = 10
-                result = await sample_plans_for_question(session, semaphore, self._question_data(), mock_writer)
+                result = await sample_plans_for_question(semaphore, self._question_data(), mock_writer)
         assert result["plans"] == []
         assert result["query"] == "test query"
+
+    @pytest.mark.asyncio
+    async def test_adds_configured_negative_plan_samples(self):
+        semaphore = asyncio.Semaphore(5)
+        mock_writer = AsyncMock()
+        positive = self._valid_plan()
+        negative = self._valid_plan()
+        negative["fixed_question"] = "bad"
+
+        with patch("plan_sampling.sample_plan", new_callable=AsyncMock, side_effect=[positive, negative]):
+            with patch("plan_sampling.config") as mock_config:
+                mock_config.PLAN_SAMPLE_K = 1
+                mock_config.PLAN_SAMPLE_K_BY_DIFFICULTY = {}
+                mock_config.NEGATIVE_PLAN_TYPES = ["wrong_tool"]
+                mock_config.NEGATIVE_PLAN_TYPES_BY_DIFFICULTY = {}
+                mock_config.REQUEST_DELAY = 0
+                mock_config.FLUSH_THRESHOLD = 10
+                result = await sample_plans_for_question(semaphore, self._question_data(), mock_writer)
+
+        assert len(result["plans"]) == 2
+        assert result["plans"][0]["quality_bucket"] == "candidate"
+        assert result["plans"][1]["negative_type"] == "wrong_tool"
+        assert result["plans"][1]["quality_bucket"] == "weak"
+
+
+class TestBuildNegativeSystemPrompt:
+    def test_wrong_tool_prompt_requests_specific_error(self):
+        prompt = build_negative_system_prompt({"tool_a": "desc"}, "simple", "wrong_tool")
+        assert "wrong_tool" in prompt
+        assert "故意选择语义不匹配" in prompt
+
+    def test_unsafe_compliance_prompt_mentions_safety(self):
+        prompt = build_negative_system_prompt({"tool_a": "desc"}, "safety", "unsafe_compliance")
+        assert "unsafe_compliance" in prompt
+        assert "错误地执行有害请求" in prompt
+
+
+class TestTieredSamplingBudget:
+    def test_plan_sample_k_uses_difficulty_override(self):
+        with patch("plan_sampling.config.PLAN_SAMPLE_K", 1), \
+             patch("plan_sampling.config.PLAN_SAMPLE_K_BY_DIFFICULTY", {"long_chain": 3}, create=True):
+            assert get_plan_sample_k("long_chain") == 3
+            assert get_plan_sample_k("simple") == 1
+
+    def test_negative_types_use_difficulty_override(self):
+        with patch("plan_sampling.config.NEGATIVE_PLAN_TYPES", ["wrong_tool"]), \
+             patch("plan_sampling.config.NEGATIVE_PLAN_TYPES_BY_DIFFICULTY", {"safety": ["unsafe_compliance"]}, create=True):
+            assert get_negative_plan_types("safety") == ["unsafe_compliance"]
+            assert get_negative_plan_types("parallel") == ["wrong_tool"]
 
 # Feature: plan-data-synthesis, Property 5: 规划采样 System Prompt 完整性
 # **Validates: Requirements 3.2, 3.6, 3.7**
@@ -318,4 +412,3 @@ class TestBuildSystemPromptDifficultyGuide:
         prompt = build_system_prompt({"tool_a": "desc"}, "long_chain")
         assert "难度专项要求：long_chain" in prompt
         assert ">= 6" in prompt
-
